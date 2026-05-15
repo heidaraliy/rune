@@ -16,8 +16,6 @@ type Scope struct {
 	CWD     string
 	Project string
 	Global  bool
-	Inbox   bool
-	Today   bool
 }
 
 type Document struct {

@@ -35,18 +35,8 @@ func (s Store) LoadScope(scope Scope) ([]*Document, error) {
 	switch {
 	case scope.Global:
 		return s.LoadAll()
-	case scope.Today:
-		doc, err := s.LoadPath(TodayPath(scope.Home, s.now()), "today", s.now().Format("2006-01-02"), "Today")
-		if err != nil {
-			return nil, err
-		}
-		docs = append(docs, doc)
-	case scope.Inbox || scope.Project == "":
-		doc, err := s.LoadPath(InboxPath(scope.Home), "inbox", "inbox", "Inbox")
-		if err != nil {
-			return nil, err
-		}
-		docs = append(docs, doc)
+	case scope.Project == "":
+		return nil, errors.New("project context required; run from a git project or pass --project")
 	default:
 		doc, err := s.LoadPath(ProjectPath(scope.Home, scope.Project), "project", scope.Project, scope.Project)
 		if err != nil {
@@ -63,17 +53,11 @@ func (s Store) LoadAll() ([]*Document, error) {
 		return nil, err
 	}
 	var docs []*Document
-	if doc, err := s.LoadPath(InboxPath(s.Home), "inbox", "inbox", "Inbox"); err == nil {
-		docs = append(docs, doc)
-	} else {
-		return nil, err
-	}
 	for _, root := range []struct {
 		dir  string
 		kind string
 	}{
 		{filepath.Join(s.Home, "projects"), "project"},
-		{filepath.Join(s.Home, "today"), "today"},
 		{filepath.Join(s.Home, "archive"), "archive"},
 	} {
 		entries, err := os.ReadDir(root.dir)
@@ -157,12 +141,6 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 		return nil, err
 	}
 	existing := existingIDs(allDocs)
-	if scope.Global || scope.Inbox {
-		doc, err = s.LoadPath(InboxPath(scope.Home), "inbox", "inbox", "Inbox")
-		if err != nil {
-			return nil, err
-		}
-	}
 	id, err := NewID(existing)
 	if err != nil {
 		return nil, err
@@ -254,7 +232,6 @@ func (s Store) Items(scope Scope, opts ListOptions) ([]*Item, []*Document, error
 	if opts.Project != "" {
 		scope.Project = cleanKey(opts.Project)
 		scope.Global = false
-		scope.Inbox = false
 	}
 	docs, err := s.LoadScope(scope)
 	if err != nil {

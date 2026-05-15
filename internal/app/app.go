@@ -151,7 +151,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.setStatus("Top bar shown.")
 	case "g":
 		m.scope.Global = !m.scope.Global
-		m.scope.Inbox = false
 		m.selected = 0
 		m.scrollTop = 0
 		if err := m.reload(); err != nil {
@@ -532,12 +531,9 @@ func (m Model) renderTop() string {
 	if m.scope.Global {
 		scope = "GLOBAL"
 		name = "all notes"
-	} else if m.scope.Inbox {
-		scope = "INBOX"
-		name = "inbox"
 	}
 	if name == "" {
-		name = "inbox"
+		name = "project"
 	}
 	openCount, doneCount := m.taskStats()
 	logo := []string{
@@ -698,10 +694,6 @@ func (m Model) doneCountInScope() int {
 func (m Model) renderLeft(width, height int) string {
 	localLabel := "project"
 	localMeta := m.scope.Project
-	if m.scope.Inbox {
-		localLabel = "capture"
-		localMeta = ""
-	}
 	lines := []string{
 		headingStyle.Render("Views"),
 		viewLine(width, !m.scope.Global, localLabel, localMeta),

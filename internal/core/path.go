@@ -42,9 +42,6 @@ func ResolveScope(cwd string, global bool, project string) (Scope, error) {
 			scope.Project = cleanKey(filepath.Base(root))
 		}
 	}
-	if scope.Project == "" && !global {
-		scope.Inbox = true
-	}
 	return scope, nil
 }
 
@@ -88,14 +85,6 @@ func ProjectPath(home, project string) string {
 	return filepath.Join(home, "projects", cleanKey(project)+".md")
 }
 
-func InboxPath(home string) string {
-	return filepath.Join(home, "inbox.md")
-}
-
-func TodayPath(home string, now time.Time) string {
-	return filepath.Join(home, "today", now.Format("2006-01-02")+".md")
-}
-
 func ArchivePath(home string, now time.Time) string {
 	year, week := now.ISOWeek()
 	return filepath.Join(home, "archive", fmt.Sprintf("%04d-W%02d.md", year, week))
@@ -108,7 +97,6 @@ func EnsureStore(home string) error {
 	for _, dir := range []string{
 		home,
 		filepath.Join(home, "projects"),
-		filepath.Join(home, "today"),
 		filepath.Join(home, "archive"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
