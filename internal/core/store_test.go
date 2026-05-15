@@ -239,6 +239,67 @@ func TestAddNearInsertsAboveAndBelowAnchor(t *testing.T) {
 	}
 }
 
+func TestAddInsertsBeforeDoneSections(t *testing.T) {
+	for _, heading := range []string{"## Restored done 2026-05-15", "## Done 2026-05-15"} {
+		t.Run(heading, func(t *testing.T) {
+			home := t.TempDir()
+			store := NewStore(home)
+			store.Now = func() time.Time { return time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC) }
+			scope := Scope{Home: home, Project: "lune"}
+			projectPath := ProjectPath(home, "lune")
+			if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := strings.Join([]string{
+				"# lune",
+				"",
+				"## Inbox",
+				"",
+				"- [ ] existing open",
+				"<!-- rune:id=open0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+				"",
+				heading,
+				"",
+				"- [x] restored done",
+				"<!-- rune:id=done0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+				"",
+			}, "\n")
+			if err := os.WriteFile(projectPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			added, err := store.Add(scope, AddOptions{Title: "fresh open", Body: "new body"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if added.Title != "fresh open" || added.Done {
+				t.Fatalf("added item = %#v, want fresh open task", added)
+			}
+			updated, err := os.ReadFile(projectPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(updated)
+			existingOpen := strings.Index(got, "- [ ] existing open")
+			freshOpen := strings.Index(got, "- [ ] fresh open")
+			doneHeading := strings.Index(got, heading)
+			restoredDone := strings.Index(got, "- [x] restored done")
+			if existingOpen < 0 || freshOpen < 0 || doneHeading < 0 || restoredDone < 0 {
+				t.Fatalf("project missing expected content:\n%s", got)
+			}
+			if !(existingOpen < freshOpen && freshOpen < doneHeading && doneHeading < restoredDone) {
+				t.Fatalf("unexpected order existing=%d fresh=%d heading=%d done=%d:\n%s", existingOpen, freshOpen, doneHeading, restoredDone, got)
+			}
+			if !strings.Contains(got, "\n  new body\n") {
+				t.Fatalf("body was not preserved:\n%s", got)
+			}
+			if count := strings.Count(got, "<!-- rune:id="); count != 3 {
+				t.Fatalf("metadata count = %d, want 3:\n%s", count, got)
+			}
+		})
+	}
+}
+
 func TestRestoreArchivedProjectMovesArchivedSectionBackToProject(t *testing.T) {
 	home := t.TempDir()
 	store := NewStore(home)
@@ -282,7 +343,8 @@ func TestRestoreArchivedProjectMovesArchivedSectionBackToProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(project); !strings.Contains(got, "## Restored done 2026-05-15") ||
+	if got := string(project); !strings.Contains(got, "## Done 2026-05-15") ||
+		strings.Contains(got, "## Restored done 2026-05-15") ||
 		!strings.Contains(got, "- [x] done task") ||
 		!strings.Contains(got, "    - [x] done child") {
 		t.Fatalf("project after restore:\n%s", got)

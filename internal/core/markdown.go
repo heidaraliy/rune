@@ -237,12 +237,45 @@ func (d *Document) ensureInboxHeading() {
 
 func (d *Document) appendItem(item *Item, body string) {
 	d.ensureInboxHeading()
-	if len(d.Lines) > 0 && strings.TrimSpace(d.Lines[len(d.Lines)-1]) != "" {
-		d.Lines = append(d.Lines, "")
+	insertAt := d.appendItemIndex()
+	block := itemBlock(item, body)
+	if insertAt == len(d.Lines) {
+		if len(d.Lines) > 0 && strings.TrimSpace(d.Lines[len(d.Lines)-1]) != "" {
+			d.Lines = append(d.Lines, "")
+		}
+		d.Lines = append(d.Lines, block...)
+	} else {
+		if insertAt > 0 && strings.TrimSpace(d.Lines[insertAt-1]) != "" {
+			block = append([]string{""}, block...)
+		}
+		if len(block) > 0 && strings.TrimSpace(block[len(block)-1]) != "" && strings.TrimSpace(d.Lines[insertAt]) != "" {
+			block = append(block, "")
+		}
+		d.Lines = append(append([]string{}, d.Lines[:insertAt]...), append(block, d.Lines[insertAt:]...)...)
 	}
-	d.Lines = append(d.Lines, itemBlock(item, body)...)
 	d.changed = true
 	parseItems(d)
+}
+
+func (d *Document) appendItemIndex() int {
+	for idx, line := range d.Lines {
+		heading, ok := parseHeading(line)
+		if !ok {
+			continue
+		}
+		if isDoneSectionHeading(heading) {
+			return idx
+		}
+	}
+	return len(d.Lines)
+}
+
+func isDoneSectionHeading(heading string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(heading))
+	return normalized == "done" ||
+		strings.HasPrefix(normalized, "done ") ||
+		normalized == "restored done" ||
+		strings.HasPrefix(normalized, "restored done ")
 }
 
 func (d *Document) insertItemNear(anchor *Item, item *Item, body string, above bool) {
