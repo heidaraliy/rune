@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/heidaraliy/rune/internal/app"
 	"github.com/heidaraliy/rune/internal/core"
+	"github.com/heidaraliy/rune/internal/handoff"
 )
 
 var version = "dev"
@@ -25,9 +26,12 @@ type programRunner interface {
 }
 
 var (
-	exitFn         = os.Exit
-	writeClipboard = clipboard.WriteAll
-	newProgram     = func(model app.Model) programRunner {
+	exitFn          = os.Exit
+	writeClipboard  = clipboard.WriteAll
+	tmuxSession     = handoff.IsTmuxSession
+	writeTmuxBuffer = handoff.LoadTmuxBuffer
+	runCodex        = handoff.RunCodex
+	newProgram      = func(model app.Model) programRunner {
 		return tea.NewProgram(model, tea.WithAltScreen())
 	}
 )
@@ -61,6 +65,10 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) i
 		err = runShow(rest, stdout, cwd)
 	case "yank":
 		err = runYank(rest, stdout, cwd)
+	case "ticket":
+		err = runTicket(rest, stdout, cwd)
+	case "codex":
+		err = runCodexTicket(rest, stdout, stderr, stdin, cwd)
 	case "edit":
 		err = runEdit(rest, stdout, stdin, cwd)
 	case "done":
@@ -226,26 +234,76 @@ func runYank(args []string, stdout io.Writer, cwd string) error {
 	fs.SetOutput(io.Discard)
 	global := fs.Bool("global", false, "all projects")
 	project := fs.String("project", "", "project")
+	printTicket := fs.Bool("print", false, "print ticket text")
 	pos, err := parseFlags(fs, args, map[string]bool{"project": true})
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 {
-		return errors.New("yank requires one id")
-	}
-	scope, store, err := scopedStore(cwd, *global, *project)
+	_, item, text, err := resolveTicket(cwd, *global, *project, pos, "yank")
 	if err != nil {
 		return err
 	}
-	item, _, err := store.Resolve(scope, pos[0], *global)
-	if err != nil {
-		return err
+	if *printTicket {
+		fmt.Fprint(stdout, text)
+		return nil
 	}
-	if err := writeClipboard(core.YankTicketText(item, scope.Home)); err != nil {
+	result, err := handoff.YankTicket(text, writeClipboard, tmuxSession(), writeTmuxBuffer)
+	if err != nil {
 		return fmt.Errorf("yank failed: %w", err)
 	}
-	fmt.Fprintf(stdout, "Yanked %s for %s.\n", item.DisplayID, core.YankAgent)
+	fmt.Fprintln(stdout, handoff.YankStatus(item.DisplayID, core.YankAgent, result))
 	return nil
+}
+
+func runTicket(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune ticket", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	global := fs.Bool("global", false, "all projects")
+	project := fs.String("project", "", "project")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true})
+	if err != nil {
+		return err
+	}
+	_, _, text, err := resolveTicket(cwd, *global, *project, pos, "ticket")
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(stdout, text)
+	return nil
+}
+
+func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
+	fs := flag.NewFlagSet("rune codex", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	global := fs.Bool("global", false, "all projects")
+	project := fs.String("project", "", "project")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true})
+	if err != nil {
+		return err
+	}
+	scope, _, text, err := resolveTicket(cwd, *global, *project, pos, "codex")
+	if err != nil {
+		return err
+	}
+	if err := runCodex(scope.CWD, text, stdin, stdout, stderr); err != nil {
+		return fmt.Errorf("codex failed: %w", err)
+	}
+	return nil
+}
+
+func resolveTicket(cwd string, global bool, project string, pos []string, command string) (core.Scope, *core.Item, string, error) {
+	if len(pos) != 1 {
+		return core.Scope{}, nil, "", fmt.Errorf("%s requires one id", command)
+	}
+	scope, store, err := scopedStore(cwd, global, project)
+	if err != nil {
+		return core.Scope{}, nil, "", err
+	}
+	item, _, err := store.Resolve(scope, pos[0], global)
+	if err != nil {
+		return core.Scope{}, nil, "", err
+	}
+	return scope, item, core.YankTicketText(item, scope.Home), nil
 }
 
 func runEdit(args []string, stdout io.Writer, stdin io.Reader, cwd string) error {
@@ -720,13 +778,15 @@ Usage:
   rune
   rune add "fix stuns" --tag combat,bug
   rune list [--global] [--all] [--done] [--tag tag]
-  rune yank <id>
+  rune yank <id> [--print]
+  rune ticket <id>
+  rune codex <id>
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global
 
 Commands:
-  add, list, show, yank, edit, done, undone, toggle, tag, untag, find
+  add, list, show, yank, ticket, codex, edit, done, undone, toggle, tag, untag, find
   projects, tags, archive, restore, import, path, doctor`)
 }
 

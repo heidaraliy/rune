@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
 	"github.com/heidaraliy/rune/internal/core"
+	"github.com/heidaraliy/rune/internal/handoff"
 )
 
 type mode int
@@ -56,7 +57,11 @@ type Model struct {
 
 const statusTTL = 2500 * time.Millisecond
 
-var writeClipboard = clipboard.WriteAll
+var (
+	writeClipboard  = clipboard.WriteAll
+	tmuxSession     = handoff.IsTmuxSession
+	writeTmuxBuffer = handoff.LoadTmuxBuffer
+)
 
 type statusClearMsg struct {
 	revision int
@@ -210,10 +215,11 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y":
 		if item := m.current(); item != nil {
 			text := m.yankTicketText(item)
-			if err := writeClipboard(text); err != nil {
+			result, err := handoff.YankTicket(text, writeClipboard, tmuxSession(), writeTmuxBuffer)
+			if err != nil {
 				return m.setStatus("Yank failed: " + err.Error())
 			}
-			return m.setStatus("Yanked " + item.DisplayID + " for " + core.YankAgent + ".")
+			return m.setStatus(handoff.YankStatus(item.DisplayID, core.YankAgent, result))
 		}
 	}
 	return m, nil
