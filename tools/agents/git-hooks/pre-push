@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+branch="$(git branch --show-current)"
+if [[ "$branch" == "main" || "$branch" == "master" || -z "$branch" ]]; then
+  echo "error: do not push feature work from ${branch:-detached HEAD}" >&2
+  exit 1
+fi
+
+python3 tools/agents/scripts/validate_agent_config.py
