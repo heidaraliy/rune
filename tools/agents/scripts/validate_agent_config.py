@@ -42,6 +42,7 @@ REQUIRED_DOCS = [
 
 EXECUTABLE_FILES = [
     "tools/agents/scripts/assert_worktree_ready.py",
+    "tools/agents/scripts/install_path_binary.sh",
     "tools/agents/scripts/pre_worktree.py",
     "tools/agents/scripts/validate_agent_config.py",
     "tools/agents/git-hooks/pre-commit",

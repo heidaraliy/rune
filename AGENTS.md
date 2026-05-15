@@ -50,6 +50,7 @@ Use the smallest skill set that covers the task.
 - Formatting-sensitive Go changes: `gofmt` or `go fmt ./...`, then verify no unintended churn.
 - CLI or storage changes: add temp-dir tests or run a temp `RUNE_HOME` smoke that does not touch real notes.
 - TUI changes: cover state transitions or render helpers with tests; inspect manually when behavior depends on a live terminal.
+- Local app updates requested for PATH: run `tools/agents/scripts/install_path_binary.sh` and verify the shell-resolved `rune` binary.
 - Agent config/docs changes: `python3 tools/agents/scripts/validate_agent_config.py`, `bash -n tools/agents/git-hooks/* tools/agents/codex-hooks/*`, and `git diff --check` when Git metadata exists.
 
 ## Failure Handling

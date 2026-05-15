@@ -14,6 +14,7 @@ Use this skill when the task touches Go validation, dependencies, local binaries
 - Keep `go.mod` and `go.sum` changes intentional.
 - Use temp `RUNE_HOME` for any command that could create or rewrite notes.
 - Verify the exact local binary path when testing installed commands.
+- If the user accesses Rune with `rune` or asks for the app to be updated in PATH, run `tools/agents/scripts/install_path_binary.sh` after tests so the shell-resolved binary is rebuilt.
 
 ## Useful Commands
 
@@ -21,6 +22,7 @@ Use this skill when the task touches Go validation, dependencies, local binaries
 go test ./...
 go test ./cmd/rune ./internal/core ./internal/app
 go run ./cmd/rune --version
+tools/agents/scripts/install_path_binary.sh
 ```
 
 For manual CLI smokes:
