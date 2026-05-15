@@ -80,6 +80,9 @@ rune doctor [--fix]
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can
 still include Markdown and multiline details.
 
+Use `rune show <id>` for a quick human-readable view of an item in the
+terminal.
+
 `rune yank <id>` and TUI `y` copy an agent-ready ticket for `$rune-agent` to the
 system clipboard. Inside tmux Rune also mirrors the ticket into a `rune-ticket`
 tmux buffer, so prefix + paste can send it into another pane without relying on

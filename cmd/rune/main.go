@@ -14,6 +14,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/heidaraliy/rune/internal/app"
 	"github.com/heidaraliy/rune/internal/core"
 	"github.com/heidaraliy/rune/internal/handoff"
@@ -705,48 +706,71 @@ func printItems(w io.Writer, home string, items []*core.Item) {
 		fmt.Fprintln(w, "No items.")
 		return
 	}
+
+	styles := newCLIStyles(w)
+	rows := make([]listRow, 0, len(items))
+	widths := listWidths{id: len("ID"), item: len("ITEM"), tags: len("TAGS"), source: len("SOURCE")}
+	showTags := false
+	showSource := false
 	for _, item := range items {
-		box := "   "
-		if item.Type == core.ItemTask {
-			if item.Done {
-				box = "[x]"
-			} else {
-				box = "[ ]"
-			}
+		row := listRow{
+			id:     item.DisplayID,
+			item:   itemDisplayText(item),
+			tags:   tagDisplayText(item.Tags),
+			source: listSourceLabel(home, item),
+			style:  itemStyle(styles, item),
 		}
-		tags := ""
-		if len(item.Tags) > 0 {
-			tags = "  #" + strings.Join(item.Tags, " #")
+		rows = append(rows, row)
+		widths.id = max(widths.id, lipgloss.Width(row.id))
+		widths.item = max(widths.item, lipgloss.Width(row.item))
+		widths.tags = max(widths.tags, lipgloss.Width(row.tags))
+		widths.source = max(widths.source, lipgloss.Width(row.source))
+		showTags = showTags || row.tags != ""
+		showSource = showSource || row.source != ""
+	}
+
+	fmt.Fprintln(w, styles.header.Render(itemCountLabel(len(items))))
+	fmt.Fprintln(w)
+	fmt.Fprint(w, styles.label.Render(padRight("ID", widths.id)))
+	fmt.Fprint(w, "  ")
+	fmt.Fprint(w, styles.label.Render(padRight("ITEM", widths.item)))
+	if showTags {
+		fmt.Fprint(w, "  ")
+		fmt.Fprint(w, styles.label.Render(padRight("TAGS", widths.tags)))
+	}
+	if showSource {
+		fmt.Fprint(w, "  ")
+		fmt.Fprint(w, styles.label.Render(padRight("SOURCE", widths.source)))
+	}
+	fmt.Fprintln(w)
+	for _, row := range rows {
+		fmt.Fprint(w, styles.id.Render(padRight(row.id, widths.id)))
+		fmt.Fprint(w, "  ")
+		fmt.Fprint(w, row.style.Render(padRight(row.item, widths.item)))
+		if showTags {
+			fmt.Fprint(w, "  ")
+			fmt.Fprint(w, styles.tag.Render(padRight(row.tags, widths.tags)))
 		}
-		source := item.Project
-		if source == "" && item.Doc != nil {
-			source = item.Doc.RelPath(home)
+		if showSource {
+			fmt.Fprint(w, "  ")
+			fmt.Fprint(w, styles.source.Render(padRight(row.source, widths.source)))
 		}
-		if source != "" {
-			source = "  " + source
-		}
-		fmt.Fprintf(w, "%-4s %s %s%s%s\n", item.DisplayID, box, item.Title, tags, source)
+		fmt.Fprintln(w)
 	}
 }
 
 func printItemDetail(w io.Writer, home string, item *core.Item) {
-	box := ""
-	if item.Type == core.ItemTask {
-		box = "[ ] "
-		if item.Done {
-			box = "[x] "
-		}
+	styles := newCLIStyles(w)
+	fmt.Fprintf(w, "%s  %s\n", styles.id.Render(item.DisplayID), itemStyle(styles, item).Render(itemDisplayText(item)))
+	printDetailMeta(w, styles, "status", core.ItemStatus(item))
+	if item.Heading != "" {
+		printDetailMeta(w, styles, "heading", item.Heading)
 	}
-	fmt.Fprintf(w, "%s  %s%s\n", item.DisplayID, box, item.Title)
 	if len(item.Tags) > 0 {
-		fmt.Fprintf(w, "tags: %s\n", strings.Join(item.Tags, ","))
+		printDetailMeta(w, styles, "tags", tagDisplayText(item.Tags))
 	}
 	if item.Source != "" {
-		source := item.Source
-		if item.Doc != nil {
-			source = item.Doc.RelPath(home)
-		}
-		fmt.Fprintf(w, "source: %s:%d\n", source, item.Line+1)
+		printDetailMeta(w, styles, "source", fmt.Sprintf("%s:%d", core.SourceLabel(item, home), item.Line+1))
 	}
 	body := item.Body()
 	if body != "" {
@@ -756,6 +780,126 @@ func printItemDetail(w io.Writer, home string, item *core.Item) {
 			fmt.Fprintln(w, scanner.Text())
 		}
 	}
+}
+
+type cliStyles struct {
+	header lipgloss.Style
+	id     lipgloss.Style
+	label  lipgloss.Style
+	open   lipgloss.Style
+	done   lipgloss.Style
+	note   lipgloss.Style
+	tag    lipgloss.Style
+	source lipgloss.Style
+	meta   lipgloss.Style
+}
+
+type listRow struct {
+	id     string
+	item   string
+	tags   string
+	source string
+	style  lipgloss.Style
+}
+
+type listWidths struct {
+	id     int
+	item   int
+	tags   int
+	source int
+}
+
+func newCLIStyles(w io.Writer) cliStyles {
+	renderer := lipgloss.NewRenderer(w)
+	return cliStyles{
+		header: renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("39")),
+		id:     renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("183")),
+		label:  renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("111")),
+		open:   renderer.NewStyle().Foreground(lipgloss.Color("222")),
+		done:   renderer.NewStyle().Foreground(lipgloss.Color("108")),
+		note:   renderer.NewStyle().Foreground(lipgloss.Color("159")),
+		tag:    renderer.NewStyle().Foreground(lipgloss.Color("111")),
+		source: renderer.NewStyle().Foreground(lipgloss.Color("245")),
+		meta:   renderer.NewStyle().Foreground(lipgloss.Color("252")),
+	}
+}
+
+func itemCountLabel(count int) string {
+	if count == 1 {
+		return "1 item"
+	}
+	return fmt.Sprintf("%d items", count)
+}
+
+func itemDisplayText(item *core.Item) string {
+	if item == nil {
+		return ""
+	}
+	if item.Type != core.ItemTask {
+		return "note " + item.Title
+	}
+	if item.Done {
+		return "[x] " + item.Title
+	}
+	return "[ ] " + item.Title
+}
+
+func itemStyle(styles cliStyles, item *core.Item) lipgloss.Style {
+	if item == nil || item.Type != core.ItemTask {
+		return styles.note
+	}
+	if item.Done {
+		return styles.done
+	}
+	return styles.open
+}
+
+func tagDisplayText(tags []string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	return "#" + strings.Join(tags, " #")
+}
+
+func listSourceLabel(home string, item *core.Item) string {
+	if item == nil {
+		return ""
+	}
+	if item.Doc != nil && item.Doc.Kind == "project" && item.Project != "" {
+		return item.Project
+	}
+	if item.Source != "" {
+		return core.SourceLabel(item, home)
+	}
+	if item.Doc != nil {
+		return item.Doc.RelPath(home)
+	}
+	return item.Project
+}
+
+func printDetailMeta(w io.Writer, styles cliStyles, label, value string) {
+	if value == "" {
+		return
+	}
+	fmt.Fprintf(w, "%s  %s\n", styles.label.Render(padRight(label, 7)), styles.meta.Render(value))
+}
+
+func padRight(value string, width int) string {
+	if width <= 0 {
+		return value
+	}
+	missing := width - lipgloss.Width(value)
+	if missing <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", missing)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func printError(w io.Writer, err error) {

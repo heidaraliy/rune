@@ -56,6 +56,96 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 }
 
+func TestRunListFormatsReadableTable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "fix list spacing", "--project", "pretty", "--tag", "ux,agent"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"add", "remember context", "--note", "--project", "pretty"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add note code = %d, stderr=%q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"done", id, "--project", "pretty"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("done code = %d, stderr=%q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"list", "--all", "--project", "pretty"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("list code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"2 items",
+		"ID",
+		"ITEM",
+		"TAGS",
+		"SOURCE",
+		"[x] fix list spacing",
+		"note remember context",
+		"#agent #ux",
+		"pretty",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("list output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunShowFormatsHumanReadableDetail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "inspect terminal output", "--project", "pretty", "--tag", "ux,agent", "--body", "first line\n\tsecond line"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"show", id, "--project", "pretty"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("show code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"[ ] inspect terminal output",
+		"status",
+		"open",
+		"heading",
+		"pretty",
+		"tags",
+		"#agent #ux",
+		"source",
+		"projects/pretty.md:",
+		"first line\n\tsecond line",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("show output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "# Rune Ticket:") || strings.Contains(got, "implement this ticket") {
+		t.Fatalf("show output should not look like an agent ticket:\n%s", got)
+	}
+}
+
 func TestRunAddProjectFlagOutsideGitWritesProjectFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
