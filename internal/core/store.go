@@ -186,8 +186,15 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 		Doc:     doc,
 	}
 	doc.appendItem(item, opts.Body)
+	inserted := findByID(doc, id)
+	if inserted == nil {
+		return nil, errors.New("inserted item could not be found")
+	}
 	s.applyDisplay([]*Document{doc})
-	return doc.Items[len(doc.Items)-1], s.Save(doc)
+	if err := s.Save(doc); err != nil {
+		return nil, err
+	}
+	return inserted, nil
 }
 
 func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions, global bool) (*Item, error) {
@@ -465,7 +472,7 @@ func (s Store) RestoreArchivedProject(scope Scope) (int, []string, error) {
 			if len(target.Lines) > 0 && strings.TrimSpace(target.Lines[len(target.Lines)-1]) != "" {
 				target.Lines = append(target.Lines, "")
 			}
-			target.Lines = append(target.Lines, "## Restored done "+section.Date, "")
+			target.Lines = append(target.Lines, "## Done "+section.Date, "")
 			target.Lines = append(target.Lines, lines...)
 			if strings.TrimSpace(target.Lines[len(target.Lines)-1]) != "" {
 				target.Lines = append(target.Lines, "")
