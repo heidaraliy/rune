@@ -94,6 +94,8 @@ j/k move
 space toggle done
 a add
 e edit in $EDITOR
+y yank ticket
+c open ticket in Codex
 / search
 f cycle open/all/done
 g toggle project/global

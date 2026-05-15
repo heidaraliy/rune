@@ -309,10 +309,11 @@ func TestArchiveRequiresConfirmation(t *testing.T) {
 	model.width = 100
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	model = updated.(Model)
-	if model.mode != modeConfirmArchive || model.archiveCount != 1 {
-		t.Fatalf("archive mode/count = %v/%d, want confirm/1", model.mode, model.archiveCount)
+	if model.mode != modeConfirm || model.confirm.action != confirmArchive {
+		t.Fatalf("archive mode/action = %v/%v, want confirm/archive", model.mode, model.confirm.action)
 	}
-	if !strings.Contains(plainText(model.renderFooter()), "y/enter confirm") {
+	footer := plainText(model.renderFooter())
+	if !strings.Contains(footer, "archive 1 done item(s)?") || !strings.Contains(footer, "y/enter confirm") {
 		t.Fatalf("confirm footer = %q", model.renderFooter())
 	}
 	if _, err := os.Stat(core.ArchivePath(home, store.Now())); !os.IsNotExist(err) {
@@ -332,6 +333,82 @@ func TestArchiveRequiresConfirmation(t *testing.T) {
 	}
 	if _, err := os.Stat(core.ArchivePath(home, store.Now())); err != nil {
 		t.Fatalf("archive was not written after confirmation: %v", err)
+	}
+}
+
+func TestCodexLaunchRequiresConfirmation(t *testing.T) {
+	home := t.TempDir()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune", CWD: t.TempDir()}
+	if _, err := store.Add(scope, core.AddOptions{Title: "codex task", Body: "launch detail"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width = 100
+	oldLaunchCodex := launchCodex
+	t.Cleanup(func() { launchCodex = oldLaunchCodex })
+	var launchedCWD, launchedPrompt string
+	launches := 0
+	launchCodex = func(cwd, prompt string) tea.Cmd {
+		launches++
+		launchedCWD = cwd
+		launchedPrompt = prompt
+		return func() tea.Msg { return codexFinishedMsg{} }
+	}
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatal("codex key launched before confirmation")
+	}
+	if model.mode != modeConfirm || model.confirm.action != confirmCodex {
+		t.Fatalf("codex mode/action = %v/%v, want confirm/codex", model.mode, model.confirm.action)
+	}
+	footer := plainText(model.renderFooter())
+	if !strings.Contains(footer, "start Codex for") || !strings.Contains(footer, "y/enter confirm") {
+		t.Fatalf("codex confirm footer = %q", model.renderFooter())
+	}
+	if launches != 0 {
+		t.Fatalf("launches before confirm = %d", launches)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	if model.mode != modeNormal || !strings.Contains(model.status, "Codex launch cancelled.") {
+		t.Fatalf("after cancel mode/status = %v/%q", model.mode, model.status)
+	}
+	if launches != 0 {
+		t.Fatalf("launches after cancel = %d", launches)
+	}
+
+	model.status = ""
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model = updated.(Model)
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.mode != modeNormal {
+		t.Fatalf("mode after confirm = %v, want normal", model.mode)
+	}
+	if cmd == nil {
+		t.Fatal("codex confirm did not return launch command")
+	}
+	if launches != 1 {
+		t.Fatalf("launches after confirm = %d", launches)
+	}
+	if launchedCWD != scope.CWD {
+		t.Fatalf("codex cwd = %q, want %q", launchedCWD, scope.CWD)
+	}
+	if !strings.Contains(launchedPrompt, "# Rune Ticket: codex task") || !strings.Contains(launchedPrompt, "launch detail") {
+		t.Fatalf("codex prompt = %q", launchedPrompt)
+	}
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if !strings.Contains(model.status, "Codex closed.") {
+		t.Fatalf("status after codex command = %q", model.status)
 	}
 }
 
@@ -444,7 +521,7 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 			t.Fatalf("footer line %d width = %d, want %d: %q", idx, got, model.width, footer)
 		}
 	}
-	for _, want := range []string{"pg ^u/^d page", "a below", "A above", "y yank", "t top", "x archive"} {
+	for _, want := range []string{"pg ^u/^d page", "a below", "A above", "y yank", "c codex", "t top", "x archive"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer missing %q: %q", want, footer)
 		}
