@@ -708,55 +708,105 @@ func printItems(w io.Writer, home string, items []*core.Item) {
 	}
 
 	styles := newCLIStyles(w)
-	rows := make([]listRow, 0, len(items))
-	widths := listWidths{id: len("ID"), item: len("ITEM"), tags: len("TAGS"), source: len("SOURCE")}
-	showTags := false
-	showSource := false
+	idWidth := 0
 	for _, item := range items {
-		row := listRow{
-			id:     item.DisplayID,
-			item:   itemDisplayText(item),
-			tags:   tagDisplayText(item.Tags),
-			source: listSourceLabel(home, item),
-			style:  itemStyle(styles, item),
-		}
-		rows = append(rows, row)
-		widths.id = max(widths.id, lipgloss.Width(row.id))
-		widths.item = max(widths.item, lipgloss.Width(row.item))
-		widths.tags = max(widths.tags, lipgloss.Width(row.tags))
-		widths.source = max(widths.source, lipgloss.Width(row.source))
-		showTags = showTags || row.tags != ""
-		showSource = showSource || row.source != ""
+		idWidth = max(idWidth, lipgloss.Width(item.DisplayID))
 	}
 
 	fmt.Fprintln(w, styles.header.Render(itemCountLabel(len(items))))
 	fmt.Fprintln(w)
-	fmt.Fprint(w, styles.label.Render(padRight("ID", widths.id)))
-	fmt.Fprint(w, "  ")
-	fmt.Fprint(w, styles.label.Render(padRight("ITEM", widths.item)))
-	if showTags {
-		fmt.Fprint(w, "  ")
-		fmt.Fprint(w, styles.label.Render(padRight("TAGS", widths.tags)))
-	}
-	if showSource {
-		fmt.Fprint(w, "  ")
-		fmt.Fprint(w, styles.label.Render(padRight("SOURCE", widths.source)))
-	}
-	fmt.Fprintln(w)
-	for _, row := range rows {
-		fmt.Fprint(w, styles.id.Render(padRight(row.id, widths.id)))
-		fmt.Fprint(w, "  ")
-		fmt.Fprint(w, row.style.Render(padRight(row.item, widths.item)))
-		if showTags {
-			fmt.Fprint(w, "  ")
-			fmt.Fprint(w, styles.tag.Render(padRight(row.tags, widths.tags)))
+	for idx, item := range items {
+		if idx > 0 {
+			fmt.Fprintln(w)
 		}
-		if showSource {
-			fmt.Fprint(w, "  ")
-			fmt.Fprint(w, styles.source.Render(padRight(row.source, widths.source)))
+		printItemCard(w, home, styles, idWidth, item)
+	}
+}
+
+func printItemCard(w io.Writer, home string, styles cliStyles, idWidth int, item *core.Item) {
+	itemText := wrapText(itemDisplayText(item), listCardBodyWidth)
+	if len(itemText) == 0 {
+		itemText = []string{""}
+	}
+	indent := strings.Repeat(" ", idWidth+2)
+	itemStyle := itemStyle(styles, item)
+
+	fmt.Fprintf(w, "%s  %s\n", styles.id.Render(padRight(item.DisplayID, idWidth)), itemStyle.Render(itemText[0]))
+	for _, line := range itemText[1:] {
+		fmt.Fprintf(w, "%s%s\n", indent, itemStyle.Render(line))
+	}
+
+	source := listSourceLabel(home, item)
+	tags := tagDisplayText(item.Tags)
+	if source != "" || tags != "" {
+		fmt.Fprint(w, indent)
+		if source != "" {
+			fmt.Fprint(w, styles.source.Render(source))
+		}
+		if tags != "" {
+			if source != "" {
+				fmt.Fprint(w, "  ")
+			}
+			fmt.Fprint(w, styles.tag.Render(tags))
 		}
 		fmt.Fprintln(w)
 	}
+}
+
+const listCardBodyWidth = 72
+
+func wrapText(text string, width int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if width <= 0 {
+		return []string{text}
+	}
+
+	var lines []string
+	current := ""
+	for _, word := range strings.Fields(text) {
+		for lipgloss.Width(word) > width {
+			if current != "" {
+				lines = append(lines, current)
+				current = ""
+			}
+			var head string
+			head, word = splitAtWidth(word, width)
+			lines = append(lines, head)
+		}
+		if current == "" {
+			current = word
+			continue
+		}
+		next := current + " " + word
+		if lipgloss.Width(next) <= width {
+			current = next
+		} else {
+			lines = append(lines, current)
+			current = word
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func splitAtWidth(text string, width int) (string, string) {
+	if width <= 0 {
+		return "", text
+	}
+	runes := []rune(text)
+	cut := 0
+	for cut < len(runes) && lipgloss.Width(string(runes[:cut+1])) <= width {
+		cut++
+	}
+	if cut == 0 {
+		cut = 1
+	}
+	return string(runes[:cut]), string(runes[cut:])
 }
 
 func printItemDetail(w io.Writer, home string, item *core.Item) {
@@ -792,21 +842,6 @@ type cliStyles struct {
 	tag    lipgloss.Style
 	source lipgloss.Style
 	meta   lipgloss.Style
-}
-
-type listRow struct {
-	id     string
-	item   string
-	tags   string
-	source string
-	style  lipgloss.Style
-}
-
-type listWidths struct {
-	id     int
-	item   int
-	tags   int
-	source int
 }
 
 func newCLIStyles(w io.Writer) cliStyles {

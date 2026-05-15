@@ -56,13 +56,13 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 }
 
-func TestRunListFormatsReadableTable(t *testing.T) {
+func TestRunListFormatsReadableCards(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
 	cwd := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"add", "fix list spacing", "--project", "pretty", "--tag", "ux,agent"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	code := run([]string{"add", "fix list spacing by wrapping a very long description that would otherwise stretch across wide terminal panes", "--project", "pretty", "--tag", "ux,agent"}, &stdout, &stderr, strings.NewReader(""), cwd)
 	if code != 0 {
 		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
 	}
@@ -91,11 +91,8 @@ func TestRunListFormatsReadableTable(t *testing.T) {
 	got := stdout.String()
 	for _, want := range []string{
 		"2 items",
-		"ID",
-		"ITEM",
-		"TAGS",
-		"SOURCE",
-		"[x] fix list spacing",
+		"[x] fix list spacing by wrapping a very long description that would",
+		"otherwise stretch across wide terminal panes",
 		"note remember context",
 		"#agent #ux",
 		"pretty",
@@ -103,6 +100,14 @@ func TestRunListFormatsReadableTable(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("list output missing %q:\n%s", want, got)
 		}
+	}
+	for _, unwanted := range []string{"ITEM", "SOURCE"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("list output kept table header %q:\n%s", unwanted, got)
+		}
+	}
+	if strings.Count(got, "\n\n") < 1 {
+		t.Fatalf("list output should separate cards with a blank line:\n%s", got)
 	}
 }
 
