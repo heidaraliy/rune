@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,10 +169,21 @@ func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldWriteClipboard := writeClipboard
-	t.Cleanup(func() { writeClipboard = oldWriteClipboard })
+	oldTmuxSession := tmuxSession
+	oldWriteTmuxBuffer := writeTmuxBuffer
+	t.Cleanup(func() {
+		writeClipboard = oldWriteClipboard
+		tmuxSession = oldTmuxSession
+		writeTmuxBuffer = oldWriteTmuxBuffer
+	})
 	var copied string
 	writeClipboard = func(value string) error {
 		copied = value
+		return nil
+	}
+	tmuxSession = func() bool { return false }
+	writeTmuxBuffer = func(string, string) error {
+		t.Fatal("tmux buffer should not be loaded outside tmux")
 		return nil
 	}
 
@@ -210,6 +222,182 @@ func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 		if !strings.Contains(copied, want) {
 			t.Fatalf("copied ticket missing %q:\n%s", want, copied)
 		}
+	}
+}
+
+func TestRunYankCopiesTicketToTmuxBuffer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldWriteClipboard := writeClipboard
+	oldTmuxSession := tmuxSession
+	oldWriteTmuxBuffer := writeTmuxBuffer
+	t.Cleanup(func() {
+		writeClipboard = oldWriteClipboard
+		tmuxSession = oldTmuxSession
+		writeTmuxBuffer = oldWriteTmuxBuffer
+	})
+	var copied string
+	writeClipboard = func(value string) error {
+		copied = value
+		return nil
+	}
+	tmuxSession = func() bool { return true }
+	var tmuxName, tmuxText string
+	writeTmuxBuffer = func(name, value string) error {
+		tmuxName = name
+		tmuxText = value
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "copy me", "--body", "tmux detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"yank", id}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("yank code = %d, stderr=%q", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "Yanked "+id+" for $rune-agent. tmux buffer ready." {
+		t.Fatalf("yank stdout = %q", got)
+	}
+	if tmuxName != "rune-ticket" {
+		t.Fatalf("tmux buffer = %q", tmuxName)
+	}
+	if copied == "" || copied != tmuxText {
+		t.Fatalf("clipboard/tmux mismatch:\nclipboard=%q\ntmux=%q", copied, tmuxText)
+	}
+	if !strings.Contains(tmuxText, "tmux detail") {
+		t.Fatalf("tmux ticket missing detail:\n%s", tmuxText)
+	}
+}
+
+func TestRunYankPrintsTicketWithoutClipboard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldWriteClipboard := writeClipboard
+	oldTmuxSession := tmuxSession
+	oldWriteTmuxBuffer := writeTmuxBuffer
+	t.Cleanup(func() {
+		writeClipboard = oldWriteClipboard
+		tmuxSession = oldTmuxSession
+		writeTmuxBuffer = oldWriteTmuxBuffer
+	})
+	writeClipboard = func(string) error {
+		t.Fatal("clipboard should not be written for --print")
+		return nil
+	}
+	tmuxSession = func() bool { return true }
+	writeTmuxBuffer = func(string, string) error {
+		t.Fatal("tmux buffer should not be loaded for --print")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "print me", "--body", "stdout detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"yank", "--print", id}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("yank --print code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "# Rune Ticket: print me") || !strings.Contains(got, "stdout detail") {
+		t.Fatalf("printed ticket = %q", got)
+	}
+	if strings.Contains(got, "Yanked ") {
+		t.Fatalf("printed ticket included status: %q", got)
+	}
+}
+
+func TestRunTicketPrintsTicket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "ticket me", "--tag", "agent", "--body", "ticket detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"ticket", id}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("ticket code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"# Rune Ticket: ticket me",
+		"- Tags: #agent",
+		"ticket detail",
+		"implement this ticket, $rune-agent\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ticket output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunCodexLaunchesTicket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRunCodex := runCodex
+	t.Cleanup(func() { runCodex = oldRunCodex })
+	var launchedCWD, launchedPrompt string
+	runCodex = func(cwd, prompt string, stdin io.Reader, stdout, stderr io.Writer) error {
+		launchedCWD = cwd
+		launchedPrompt = prompt
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "launch codex", "--body", "codex detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"codex", id}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("codex code = %d, stderr=%q", code, stderr.String())
+	}
+	if launchedCWD != cwd {
+		t.Fatalf("codex cwd = %q, want %q", launchedCWD, cwd)
+	}
+	if !strings.Contains(launchedPrompt, "# Rune Ticket: launch codex") || !strings.Contains(launchedPrompt, "codex detail") {
+		t.Fatalf("codex prompt = %q", launchedPrompt)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("codex stdout = %q", stdout.String())
 	}
 }
 

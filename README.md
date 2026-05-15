@@ -58,7 +58,9 @@ ID.
 rune add "text" [--tag a,b] [--project p] [--note] [--body "..."]
 rune list [--global] [--all] [--done] [--tag t] [--project p] [--json]
 rune show <id> [--raw]
-rune yank <id>
+rune yank <id> [--print]
+rune ticket <id>
+rune codex <id>
 rune edit <id> --end "..." | --replace "..." | --title "..." | --stdin
 rune done <id>
 rune undone <id>
@@ -76,6 +78,13 @@ rune doctor [--fix]
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can
 still include Markdown and multiline details.
+
+`rune yank <id>` and TUI `y` copy an agent-ready ticket for `$rune-agent` to the
+system clipboard. Inside tmux Rune also mirrors the ticket into a `rune-ticket`
+tmux buffer, so prefix + paste can send it into another pane without relying on
+a remote device clipboard. Use `rune ticket <id>` or `rune yank <id> --print` to
+write the ticket to stdout, and `rune codex <id>` to start Codex directly with
+that ticket as the prompt.
 
 ## TUI
 

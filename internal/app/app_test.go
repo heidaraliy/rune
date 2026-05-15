@@ -521,10 +521,21 @@ func TestYankCopiesTicketContextForRuneAgent(t *testing.T) {
 		}
 	}
 	oldWriteClipboard := writeClipboard
-	t.Cleanup(func() { writeClipboard = oldWriteClipboard })
+	oldTmuxSession := tmuxSession
+	oldWriteTmuxBuffer := writeTmuxBuffer
+	t.Cleanup(func() {
+		writeClipboard = oldWriteClipboard
+		tmuxSession = oldTmuxSession
+		writeTmuxBuffer = oldWriteTmuxBuffer
+	})
 	var copied string
 	writeClipboard = func(value string) error {
 		copied = value
+		return nil
+	}
+	tmuxSession = func() bool { return false }
+	writeTmuxBuffer = func(string, string) error {
+		t.Fatal("tmux buffer should not be loaded outside tmux")
 		return nil
 	}
 
@@ -553,6 +564,55 @@ func TestYankCopiesTicketContextForRuneAgent(t *testing.T) {
 	}
 	if !strings.Contains(model.status, "Yanked bbb for $rune-agent.") {
 		t.Fatalf("status = %q", model.status)
+	}
+}
+
+func TestYankCopiesTicketToTmuxBufferWhenAvailable(t *testing.T) {
+	home := t.TempDir()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune"}
+	if _, err := store.Add(scope, core.AddOptions{Title: "tmux handoff", Body: "detail for tmux"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldWriteClipboard := writeClipboard
+	oldTmuxSession := tmuxSession
+	oldWriteTmuxBuffer := writeTmuxBuffer
+	t.Cleanup(func() {
+		writeClipboard = oldWriteClipboard
+		tmuxSession = oldTmuxSession
+		writeTmuxBuffer = oldWriteTmuxBuffer
+	})
+	var copied string
+	writeClipboard = func(value string) error {
+		copied = value
+		return nil
+	}
+	tmuxSession = func() bool { return true }
+	var tmuxName, tmuxText string
+	writeTmuxBuffer = func(name, value string) error {
+		tmuxName = name
+		tmuxText = value
+		return nil
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+
+	if !strings.Contains(model.status, "tmux buffer ready") {
+		t.Fatalf("status = %q", model.status)
+	}
+	if tmuxName != "rune-ticket" {
+		t.Fatalf("tmux buffer = %q", tmuxName)
+	}
+	if copied == "" || copied != tmuxText {
+		t.Fatalf("clipboard/tmux mismatch:\nclipboard=%q\ntmux=%q", copied, tmuxText)
+	}
+	if !strings.Contains(tmuxText, "# Rune Ticket: tmux handoff") || !strings.Contains(tmuxText, "detail for tmux") {
+		t.Fatalf("tmux ticket = %q", tmuxText)
 	}
 }
 
