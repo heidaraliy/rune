@@ -8,7 +8,7 @@ Set `RUNE_HOME` to a temp directory, run `rune add "fix stuns" --tag combat,bug`
 
 Expected:
 
-- The item is written under the detected project or inbox scope.
+- The item is written under the detected project, or an explicit `--project` when outside a project.
 - The displayed ID is a shortest unique prefix.
 - Tags are normalized and listed.
 

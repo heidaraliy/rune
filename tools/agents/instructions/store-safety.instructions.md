@@ -11,7 +11,7 @@ Use for `internal/core/**`, Markdown parsing, note-file writes, IDs, archive/res
 - Use temp-dir tests for every behavior that creates, edits, imports, archives, restores, or scans note files.
 - Do not depend on the developer machine's real home directory, editor setup, clipboard, or Git state in tests.
 - When changing archive/restore/import behavior, verify both file content and source path expectations.
-- Keep path construction centralized through existing helpers such as `Home`, `ProjectPath`, `InboxPath`, `TodayPath`, and `ArchivePath`.
+- Keep path construction centralized through existing helpers such as `Home`, `ProjectPath`, and `ArchivePath`.
 
 ## Validation
 

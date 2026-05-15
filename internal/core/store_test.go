@@ -68,6 +68,40 @@ func TestAddListEditAndDone(t *testing.T) {
 	}
 }
 
+func TestAddRequiresProjectScopeAndDoesNotCreateInbox(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	if _, err := store.Add(Scope{Home: home}, AddOptions{Title: "orphan task"}); err == nil {
+		t.Fatal("Add without project scope succeeded, want error")
+	}
+	if _, err := os.Stat(filepath.Join(home, "inbox.md")); !os.IsNotExist(err) {
+		t.Fatalf("inbox.md stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "today")); !os.IsNotExist(err) {
+		t.Fatalf("today stat error = %v, want not exist", err)
+	}
+}
+
+func TestAddCreatesProjectFileWithoutInboxHeading(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	scope := Scope{Home: home, Project: "lune"}
+	if _, err := store.Add(scope, AddOptions{Title: "project task"}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(ProjectPath(home, "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(content)
+	if strings.Contains(strings.ToLower(got), "## inbox") {
+		t.Fatalf("project file kept inbox heading:\n%s", got)
+	}
+	if !strings.Contains(got, "# lune\n\n- [ ] project task\n") {
+		t.Fatalf("project file content:\n%s", got)
+	}
+}
+
 func TestResolvePrefixAllowsShortestUniqueAndReportsAmbiguity(t *testing.T) {
 	items := []*Item{
 		{ID: "1hc9fq2a", Title: "networking idea"},
@@ -253,8 +287,6 @@ func TestAddInsertsBeforeDoneSections(t *testing.T) {
 			content := strings.Join([]string{
 				"# lune",
 				"",
-				"## Inbox",
-				"",
 				"- [ ] existing open",
 				"<!-- rune:id=open0000 type=task tags= created=2026-05-14T00:00:00Z -->",
 				"",
@@ -308,7 +340,7 @@ func TestRestoreArchivedProjectMovesArchivedSectionBackToProject(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(projectPath, []byte("# lune\n\n## Inbox\n\n- [ ] open task\n<!-- rune:id=open0000 type=task tags= created=2026-05-14T00:00:00Z -->\n"), 0o644); err != nil {
+	if err := os.WriteFile(projectPath, []byte("# lune\n\n- [ ] open task\n<!-- rune:id=open0000 type=task tags= created=2026-05-14T00:00:00Z -->\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(home, "archive", "2026-W20.md")
@@ -317,8 +349,6 @@ func TestRestoreArchivedProjectMovesArchivedSectionBackToProject(t *testing.T) {
 	}
 	archive := strings.Join([]string{
 		"# Archive",
-		"",
-		"## Inbox",
 		"",
 		"## lune - 2026-05-15",
 		"",

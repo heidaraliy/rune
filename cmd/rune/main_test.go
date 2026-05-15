@@ -55,6 +55,76 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 }
 
+func TestRunAddProjectFlagOutsideGitWritesProjectFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "fix remote trace", "--project", "Lune"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	projectPath := filepath.Join(home, "projects", "lune.md")
+	content, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(content)
+	if !strings.Contains(got, "# lune\n\n- [ ] fix remote trace\n") {
+		t.Fatalf("project file content:\n%s", got)
+	}
+	if strings.Contains(strings.ToLower(got), "## inbox") {
+		t.Fatalf("project file kept inbox heading:\n%s", got)
+	}
+	for _, legacyPath := range []string{
+		filepath.Join(home, "inbox.md"),
+		filepath.Join(home, "today"),
+	} {
+		if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+			t.Fatalf("%s stat error = %v, want not exist", legacyPath, err)
+		}
+	}
+}
+
+func TestRunAddRequiresProjectOutsideGit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "orphan note"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code == 0 {
+		t.Fatalf("add code = 0, stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "project context required") || !strings.Contains(stderr.String(), "--project") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "inbox.md")); !os.IsNotExist(err) {
+		t.Fatalf("inbox.md stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "today")); !os.IsNotExist(err) {
+		t.Fatalf("today stat error = %v, want not exist", err)
+	}
+}
+
+func TestRunInboxAndTodayCommandsAreRemoved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+
+	for _, command := range []string{"inbox", "today"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{command, "legacy capture"}, &stdout, &stderr, strings.NewReader(""), cwd)
+		if code == 0 {
+			t.Fatalf("%s code = 0, stdout=%q", command, stdout.String())
+		}
+		if !strings.Contains(stderr.String(), "unknown command") {
+			t.Fatalf("%s stderr = %q", command, stderr.String())
+		}
+	}
+}
+
 func TestRunDoneHidesOpenListButAllShowsIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

@@ -12,7 +12,7 @@ Use this skill for `cmd/rune/**` and CLI-visible behavior.
 - Preserve `run(args, stdout, stderr, stdin, cwd)` as the test seam.
 - Keep normal output on stdout and errors on stderr.
 - Preserve interspersed flags and command aliases where tests or README document them.
-- Preserve `RUNE_HOME`, `cwd`, `--project`, `--global`, inbox, today, and project detection behavior.
+- Preserve `RUNE_HOME`, `cwd`, `--project`, `--global` read/search scope, and project detection behavior.
 - Keep JSON output structured and stable.
 - Keep usage examples aligned with README.
 

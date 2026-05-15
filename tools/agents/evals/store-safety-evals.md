@@ -20,7 +20,7 @@ Expected:
 
 - Open items remain in the project file.
 - Completed items move to the expected ISO week archive.
-- Restore places archived sections back into the right project or inbox file.
+- Restore places archived sections back into the right project file.
 
 ## Import Existing Markdown
 

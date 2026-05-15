@@ -25,22 +25,23 @@ rune
 
 Run `rune` with no arguments to open the TUI.
 
+Outside a git project, pass `--project` to write directly to
+`~/notes/projects/<project>.md`.
+
 ## Storage
 
 Rune writes Markdown. No database, no hosted service, no sync layer.
 
 ```text
 ~/notes/
-  inbox.md
   projects/<project>.md
-  today/YYYY-MM-DD.md
   archive/YYYY-WW.md
 ```
 
 Set `RUNE_HOME` to use another store.
 
 ```sh
-RUNE_HOME="$(mktemp -d)" rune add "try rune safely"
+RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
 
 ## IDs
@@ -54,7 +55,7 @@ ID.
 ## CLI
 
 ```sh
-rune add "text" [--tag a,b] [--project p] [--global] [--note] [--body "..."]
+rune add "text" [--tag a,b] [--project p] [--note] [--body "..."]
 rune list [--global] [--all] [--done] [--tag t] [--project p] [--json]
 rune show <id> [--raw]
 rune yank <id>
@@ -65,8 +66,6 @@ rune toggle <id>
 rune tag <id> a,b
 rune untag <id> a,b
 rune find "query" [--global] [--tag t]
-rune today ["text"]
-rune inbox ["text"]
 rune projects
 rune tags
 rune archive --done [--project p]

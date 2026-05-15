@@ -33,7 +33,7 @@ func NewDocument(path, kind, key, title string) *Document {
 		Kind:  kind,
 		Key:   key,
 		Title: title,
-		Lines: []string{"# " + title, "", "## Inbox", ""},
+		Lines: []string{"# " + title, ""},
 	}
 	parseItems(doc)
 	doc.changed = true
@@ -222,21 +222,7 @@ func parseTime(value string) time.Time {
 	return t
 }
 
-func (d *Document) ensureInboxHeading() {
-	for _, line := range d.Lines {
-		if strings.EqualFold(strings.TrimSpace(line), "## inbox") {
-			return
-		}
-	}
-	if len(d.Lines) > 0 && strings.TrimSpace(d.Lines[len(d.Lines)-1]) != "" {
-		d.Lines = append(d.Lines, "")
-	}
-	d.Lines = append(d.Lines, "## Inbox", "")
-	d.changed = true
-}
-
 func (d *Document) appendItem(item *Item, body string) {
-	d.ensureInboxHeading()
 	insertAt := d.appendItemIndex()
 	block := itemBlock(item, body)
 	if insertAt == len(d.Lines) {

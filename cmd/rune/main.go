@@ -75,10 +75,6 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) i
 		err = runTag(rest, stdout, cwd, false)
 	case "find", "search":
 		err = runFind(rest, stdout, cwd)
-	case "today":
-		err = runQuickNote(rest, stdout, stdin, cwd, "today")
-	case "inbox":
-		err = runQuickNote(rest, stdout, stdin, cwd, "inbox")
 	case "projects":
 		err = runProjects(rest, stdout, cwd)
 	case "tags":
@@ -126,7 +122,6 @@ func runAdd(args []string, stdout io.Writer, stdin io.Reader, cwd string) error 
 	fs.SetOutput(io.Discard)
 	tags := fs.String("tag", "", "comma-separated tags")
 	project := fs.String("project", "", "project")
-	global := fs.Bool("global", false, "add to global inbox")
 	asNote := fs.Bool("note", false, "create a note item")
 	body := fs.String("body", "", "body text")
 	fromStdin := fs.Bool("stdin", false, "read body from stdin")
@@ -144,13 +139,9 @@ func runAdd(args []string, stdout io.Writer, stdin io.Reader, cwd string) error 
 		}
 		*body = text
 	}
-	scope, store, err := scopedStore(cwd, *global, *project)
+	scope, store, err := scopedStore(cwd, false, *project)
 	if err != nil {
 		return err
-	}
-	if *global {
-		scope.Inbox = true
-		scope.Global = false
 	}
 	item, err := store.Add(scope, core.AddOptions{
 		Title:  core.DecodeEscapes(strings.Join(pos, " ")),
@@ -383,51 +374,6 @@ func runFind(args []string, stdout io.Writer, cwd string) error {
 		return err
 	}
 	printItems(stdout, scope.Home, items)
-	return nil
-}
-
-func runQuickNote(args []string, stdout io.Writer, stdin io.Reader, cwd, kind string) error {
-	fs := flag.NewFlagSet("rune "+kind, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	tags := fs.String("tag", "", "comma-separated tags")
-	body := fs.String("body", "", "body")
-	fromStdin := fs.Bool("stdin", false, "stdin")
-	pos, err := parseFlags(fs, args, map[string]bool{"tag": true, "body": true})
-	if err != nil {
-		return err
-	}
-	scope, store, err := scopedStore(cwd, false, "")
-	if err != nil {
-		return err
-	}
-	scope.Project = ""
-	scope.Inbox = kind == "inbox"
-	scope.Today = kind == "today"
-	if len(pos) == 0 && !*fromStdin {
-		items, _, err := store.Items(scope, core.ListOptions{})
-		if err != nil {
-			return err
-		}
-		printItems(stdout, scope.Home, items)
-		return nil
-	}
-	if *fromStdin {
-		text, err := readAll(stdin)
-		if err != nil {
-			return err
-		}
-		*body = text
-	}
-	item, err := store.Add(scope, core.AddOptions{
-		Title:  core.DecodeEscapes(strings.Join(pos, " ")),
-		Body:   core.DecodeEscapes(*body),
-		Tags:   splitCSV(*tags),
-		AsNote: true,
-	})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "Added %s  %s\n", item.DisplayID, item.Title)
 	return nil
 }
 
@@ -781,7 +727,7 @@ Usage:
 
 Commands:
   add, list, show, yank, edit, done, undone, toggle, tag, untag, find
-  today, inbox, projects, tags, archive, restore, import, path, doctor`)
+  projects, tags, archive, restore, import, path, doctor`)
 }
 
 func displayVersion() string {
