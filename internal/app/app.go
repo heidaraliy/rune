@@ -22,7 +22,7 @@ const (
 	modeNormal mode = iota
 	modeSearch
 	modeAdd
-	modeConfirmArchive
+	modeConfirm
 )
 
 type filterMode int
@@ -33,26 +33,42 @@ const (
 	filterDone
 )
 
+type confirmAction int
+
+const (
+	confirmNone confirmAction = iota
+	confirmArchive
+	confirmCodex
+)
+
+type confirmation struct {
+	action        confirmAction
+	prompt        string
+	itemDisplayID string
+	codexCWD      string
+	codexPrompt   string
+}
+
 type Model struct {
-	store        core.Store
-	scope        core.Scope
-	docs         []*core.Document
-	items        []*core.Item
-	selected     int
-	scrollTop    int
-	width        int
-	height       int
-	mode         mode
-	filter       filterMode
-	query        string
-	input        textinput.Model
-	status       string
-	statusRev    int
-	collapsed    map[string]bool
-	addAnchor    string
-	addAbove     bool
-	topHidden    bool
-	archiveCount int
+	store     core.Store
+	scope     core.Scope
+	docs      []*core.Document
+	items     []*core.Item
+	selected  int
+	scrollTop int
+	width     int
+	height    int
+	mode      mode
+	filter    filterMode
+	query     string
+	input     textinput.Model
+	status    string
+	statusRev int
+	collapsed map[string]bool
+	addAnchor string
+	addAbove  bool
+	topHidden bool
+	confirm   confirmation
 }
 
 const statusTTL = 2500 * time.Millisecond
@@ -61,6 +77,7 @@ var (
 	writeClipboard  = clipboard.WriteAll
 	tmuxSession     = handoff.IsTmuxSession
 	writeTmuxBuffer = handoff.LoadTmuxBuffer
+	launchCodex     = openCodex
 )
 
 type statusClearMsg struct {
@@ -115,8 +132,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSearch(msg)
 		case modeAdd:
 			return m.updateAdd(msg)
-		case modeConfirmArchive:
-			return m.updateConfirmArchive(msg)
+		case modeConfirm:
+			return m.updateConfirm(msg)
 		default:
 			return m.updateNormal(msg)
 		}
@@ -131,6 +148,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.reload()
 			return m.setStatus("Editor closed.")
 		}
+	case codexFinishedMsg:
+		if msg.err != nil {
+			return m.setStatus("Codex failed: " + msg.err.Error())
+		}
+		return m.setStatus("Codex closed.")
 	}
 	return m, nil
 }
@@ -205,12 +227,25 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if count == 0 {
 			return m.setStatus("No completed items to archive.")
 		}
-		m.mode = modeConfirmArchive
-		m.archiveCount = count
+		m = m.enterConfirm(confirmation{
+			action: confirmArchive,
+			prompt: fmt.Sprintf("archive %d done item(s)?", count),
+		})
 		return m, nil
 	case "e":
 		if item := m.current(); item != nil {
 			return m, openEditor(item)
+		}
+	case "c":
+		if item := m.current(); item != nil {
+			m = m.enterConfirm(confirmation{
+				action:        confirmCodex,
+				prompt:        "start Codex for " + item.DisplayID + "?",
+				itemDisplayID: item.DisplayID,
+				codexCWD:      m.scope.CWD,
+				codexPrompt:   m.yankTicketText(item),
+			})
+			return m, nil
 		}
 	case "y":
 		if item := m.current(); item != nil {
@@ -225,6 +260,18 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) enterConfirm(confirm confirmation) Model {
+	m.mode = modeConfirm
+	m.confirm = confirm
+	return m
+}
+
+func (m Model) clearConfirm() Model {
+	m.mode = modeNormal
+	m.confirm = confirmation{}
+	return m
+}
+
 func (m Model) toggleCurrent() (tea.Model, tea.Cmd) {
 	if item := m.current(); item != nil && item.Type == core.ItemTask {
 		updated, err := m.store.SetDone(m.scope, item.DisplayID, false, true, m.scope.Global)
@@ -237,26 +284,64 @@ func (m Model) toggleCurrent() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateConfirmArchive(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "n", "N":
-		m.mode = modeNormal
-		m.archiveCount = 0
-		return m.setStatus("Archive cancelled.")
+		action := m.confirm.action
+		m = m.clearConfirm()
+		return m.setStatus(confirmCancelStatus(action))
 	case "enter", "y", "Y":
-		count, path, err := m.store.ArchiveDone(m.scope)
-		m.mode = modeNormal
-		m.archiveCount = 0
-		if err != nil {
-			return m.setStatus(err.Error())
+		confirm := m.confirm
+		m = m.clearConfirm()
+		switch confirm.action {
+		case confirmArchive:
+			return m.confirmArchive()
+		case confirmCodex:
+			if strings.TrimSpace(confirm.codexPrompt) == "" {
+				return m.setStatus("No item selected.")
+			}
+			m, _ = m.setStatus("Starting Codex for " + confirm.itemDisplayID + ".")
+			return m, launchCodex(confirm.codexCWD, confirm.codexPrompt)
+		default:
+			return m, nil
 		}
-		if count == 0 {
-			return m.setStatus("No completed items to archive.")
-		}
-		_ = m.reload()
-		return m.setStatus(fmt.Sprintf("Archived %d item(s) to %s.", count, path))
 	}
 	return m, nil
+}
+
+func (m Model) confirmArchive() (tea.Model, tea.Cmd) {
+	count, path, err := m.store.ArchiveDone(m.scope)
+	if err != nil {
+		return m.setStatus(err.Error())
+	}
+	if count == 0 {
+		return m.setStatus("No completed items to archive.")
+	}
+	_ = m.reload()
+	return m.setStatus(fmt.Sprintf("Archived %d item(s) to %s.", count, path))
+}
+
+func confirmCancelStatus(action confirmAction) string {
+	switch action {
+	case confirmCodex:
+		return "Codex launch cancelled."
+	case confirmArchive:
+		return "Archive cancelled."
+	default:
+		return "Cancelled."
+	}
+}
+
+type codexFinishedMsg struct{ err error }
+
+func openCodex(cwd, prompt string) tea.Cmd {
+	cmd := exec.Command("codex", prompt)
+	if strings.TrimSpace(cwd) != "" {
+		cmd.Dir = cwd
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return codexFinishedMsg{err: err}
+	})
 }
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -398,7 +483,7 @@ func (m Model) footerHeight() int {
 }
 
 func (m Model) footerContentHeight() int {
-	if m.mode == modeSearch || m.mode == modeAdd || m.mode == modeConfirmArchive || m.status != "" {
+	if m.mode == modeSearch || m.mode == modeAdd || m.mode == modeConfirm || m.status != "" {
 		return 1
 	}
 	return 2
@@ -583,8 +668,8 @@ func (m Model) renderFooter() string {
 		content := footerBarStyle.Render(" " + m.input.View())
 		return renderFooterBox(m.width, []string{renderSolidLine(footerBarStyle, innerWidth, content)}, footerBarStyle)
 	}
-	if m.mode == modeConfirmArchive {
-		content := footerBarStyle.Render(fmt.Sprintf(" archive %d done item(s)?  ", m.archiveCount)) +
+	if m.mode == modeConfirm {
+		content := footerBarStyle.Render(" "+m.confirm.prompt+"  ") +
 			footerKeyStyleFor("y/enter").Render("y/enter") + footerBarStyle.Render(" confirm  ") +
 			footerKeyStyleFor("n/esc").Render("n/esc") + footerBarStyle.Render(" cancel")
 		return renderFooterBox(m.width, []string{renderSolidLine(footerBarStyle, innerWidth, content)}, footerBarStyle)
@@ -601,6 +686,7 @@ func (m Model) renderFooter() string {
 			{"A", "above"},
 			{"e", "edit"},
 			{"y", "yank"},
+			{"c", "codex"},
 		}),
 		renderFooterRow(innerWidth, []footerHint{
 			{"/", "search"},
@@ -642,7 +728,7 @@ func footerKeyStyleFor(key string) lipgloss.Style {
 		color = lipgloss.Color("111")
 	case "spc":
 		color = cosmicAmber
-	case "a", "A", "e", "y", "y/enter":
+	case "a", "A", "e", "y", "c", "y/enter":
 		color = cosmicGreen
 	case "g", "t":
 		color = cosmicViolet
