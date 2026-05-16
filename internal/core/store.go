@@ -124,6 +124,26 @@ func (s Store) SaveAll(docs []*Document) error {
 	return nil
 }
 
+func (s Store) assignMissingIDs(doc *Document, items []*Item, existing map[string]bool) error {
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		if item.ID != "" {
+			continue
+		}
+		id, err := NewID(existing)
+		if err != nil {
+			return err
+		}
+		existing[id] = true
+		item.ID = id
+		if item.Created.IsZero() {
+			item.Created = s.now()
+		}
+		doc.updateMeta(item)
+	}
+	return nil
+}
+
 func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 	if opts.Title = strings.TrimSpace(opts.Title); opts.Title == "" {
 		return nil, errors.New("title is required")
@@ -168,6 +188,11 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 	if inserted == nil {
 		return nil, errors.New("inserted item could not be found")
 	}
+	existing[id] = true
+	if err := s.assignMissingIDs(doc, doc.subtreeItems(inserted), existing); err != nil {
+		return nil, err
+	}
+	inserted = findByID(doc, id)
 	s.applyDisplay([]*Document{doc})
 	if err := s.Save(doc); err != nil {
 		return nil, err
@@ -218,6 +243,12 @@ func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions
 	if inserted == nil {
 		return nil, errors.New("inserted item could not be found")
 	}
+	existing := existingIDs(allDocs)
+	existing[id] = true
+	if err := s.assignMissingIDs(anchor.Doc, anchor.Doc.subtreeItems(inserted), existing); err != nil {
+		return nil, err
+	}
+	inserted = findByID(anchor.Doc, id)
 	ApplyDisplayIDs(anchor.Doc.Items)
 	if err := s.Save(anchor.Doc); err != nil {
 		return nil, err
@@ -251,12 +282,13 @@ func FilterItems(items []*Item, opts ListOptions) []*Item {
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	var out []*Item
 	for _, item := range items {
+		done := itemEffectivelyDone(item)
 		if !opts.All {
 			if opts.Done {
-				if !item.IsDone() {
+				if !done {
 					continue
 				}
-			} else if item.IsDone() {
+			} else if done {
 				continue
 			}
 		}
@@ -269,6 +301,49 @@ func FilterItems(items []*Item, opts ListOptions) []*Item {
 		out = append(out, item)
 	}
 	return out
+}
+
+func itemEffectivelyDone(item *Item) bool {
+	if item == nil {
+		return false
+	}
+	if item.IsDone() {
+		return true
+	}
+	if item.Doc == nil {
+		return false
+	}
+	return itemHasDoneTaskAncestor(item)
+}
+
+func itemHasDoneTaskAncestor(item *Item) bool {
+	if item == nil || item.Doc == nil {
+		return false
+	}
+	for _, candidate := range item.Doc.Items {
+		if candidate.Line >= item.Line {
+			break
+		}
+		if candidate.Type == ItemTask && candidate.Done && candidate.Depth < item.Depth {
+			covered := true
+			for _, between := range item.Doc.Items {
+				if between.Line <= candidate.Line {
+					continue
+				}
+				if between.Line >= item.Line {
+					break
+				}
+				if between.Depth <= candidate.Depth {
+					covered = false
+					break
+				}
+			}
+			if covered {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func itemMatches(item *Item, query string) bool {
@@ -302,6 +377,7 @@ func (s Store) Edit(scope Scope, prefix string, opts EditOptions, global bool) (
 		return nil, err
 	}
 	doc := item.Doc
+	changedBody := false
 	if opts.Title != "" {
 		item.Title = strings.TrimSpace(opts.Title)
 		doc.updateItemLine(item)
@@ -310,10 +386,12 @@ func (s Store) Edit(scope Scope, prefix string, opts EditOptions, global bool) (
 	if opts.Append != "" {
 		doc.appendBody(item, opts.Append)
 		item = findByID(doc, item.ID)
+		changedBody = true
 	}
 	if opts.ReplaceBody != "" {
 		doc.replaceBody(item, opts.ReplaceBody)
 		item = findByID(doc, item.ID)
+		changedBody = true
 	}
 	if len(opts.Tags) > 0 || len(opts.Untags) > 0 {
 		tags := make(map[string]bool)
@@ -332,6 +410,16 @@ func (s Store) Edit(scope Scope, prefix string, opts EditOptions, global bool) (
 		}
 		item.Tags = normalizeTags(item.Tags)
 		doc.updateMeta(item)
+		item = findByID(doc, item.ID)
+	}
+	if changedBody {
+		allDocs, err := s.LoadAll()
+		if err != nil {
+			return nil, err
+		}
+		if err := s.assignMissingIDs(doc, doc.subtreeItems(item), existingIDs(allDocs)); err != nil {
+			return nil, err
+		}
 		item = findByID(doc, item.ID)
 	}
 	if err := s.Save(doc); err != nil {
@@ -355,6 +443,14 @@ func (s Store) SetDone(scope Scope, prefix string, done bool, toggle bool, globa
 		item.Done = done
 	}
 	item.Doc.updateItemLine(item)
+	if item.Done {
+		item = findByID(item.Doc, item.ID)
+		for _, child := range item.Doc.taskDescendants(item) {
+			if !child.Done {
+				item.Doc.setTaskDone(child, true)
+			}
+		}
+	}
 	if err := s.Save(item.Doc); err != nil {
 		return nil, err
 	}
@@ -380,7 +476,13 @@ func (s Store) ArchiveDone(scope Scope) (int, string, error) {
 	if len(done) == 0 {
 		return 0, "", nil
 	}
-	blocks := doc.removeBlocks(done)
+	var roots []*Item
+	for _, item := range done {
+		if !itemHasDoneTaskAncestor(item) {
+			roots = append(roots, item)
+		}
+	}
+	blocks := doc.removeSubtrees(roots)
 	archivePath := ArchivePath(scope.Home, s.now())
 	archive, err := s.LoadPath(archivePath, "archive", "archive", "Archive")
 	if err != nil {
