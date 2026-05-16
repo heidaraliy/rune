@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func gitProjectDir(t *testing.T, name string) string {
+	t.Helper()
+	cwd := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return cwd
+}
+
 func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
@@ -259,10 +268,7 @@ func TestRunDoneHidesOpenListButAllShowsIt(t *testing.T) {
 func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
-	cwd := t.TempDir()
-	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	cwd := gitProjectDir(t, "lune")
 	oldWriteClipboard := writeClipboard
 	oldTmuxSession := tmuxSession
 	oldWriteTmuxBuffer := writeTmuxBuffer
@@ -302,7 +308,7 @@ func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("yank code = %d, stderr=%q", code, stderr.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != "Yanked "+id+" for $rune-agent." {
+	if got := strings.TrimSpace(stdout.String()); got != "Yanked "+id+" for $lune-agent." {
 		t.Fatalf("yank stdout = %q", got)
 	}
 	for _, want := range []string{
@@ -312,7 +318,7 @@ func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 		"- Tags: #combat",
 		"first line",
 		"appended detail",
-		"implement this ticket, $rune-agent\n",
+		"implement this ticket, $lune-agent\n",
 	} {
 		if !strings.Contains(copied, want) {
 			t.Fatalf("copied ticket missing %q:\n%s", want, copied)
@@ -323,10 +329,7 @@ func TestRunYankCopiesTicketToClipboard(t *testing.T) {
 func TestRunYankCopiesTicketToTmuxBuffer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
-	cwd := t.TempDir()
-	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	cwd := gitProjectDir(t, "lune")
 	oldWriteClipboard := writeClipboard
 	oldTmuxSession := tmuxSession
 	oldWriteTmuxBuffer := writeTmuxBuffer
@@ -361,7 +364,7 @@ func TestRunYankCopiesTicketToTmuxBuffer(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("yank code = %d, stderr=%q", code, stderr.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != "Yanked "+id+" for $rune-agent. tmux buffer ready." {
+	if got := strings.TrimSpace(stdout.String()); got != "Yanked "+id+" for $lune-agent. tmux buffer ready." {
 		t.Fatalf("yank stdout = %q", got)
 	}
 	if tmuxName != "rune-ticket" {
@@ -378,10 +381,7 @@ func TestRunYankCopiesTicketToTmuxBuffer(t *testing.T) {
 func TestRunYankPrintsTicketWithoutClipboard(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
-	cwd := t.TempDir()
-	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	cwd := gitProjectDir(t, "lune")
 	oldWriteClipboard := writeClipboard
 	oldTmuxSession := tmuxSession
 	oldWriteTmuxBuffer := writeTmuxBuffer
@@ -425,10 +425,7 @@ func TestRunYankPrintsTicketWithoutClipboard(t *testing.T) {
 func TestRunTicketPrintsTicket(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
-	cwd := t.TempDir()
-	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	cwd := gitProjectDir(t, "lune")
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"add", "ticket me", "--tag", "agent", "--body", "ticket detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
@@ -448,11 +445,43 @@ func TestRunTicketPrintsTicket(t *testing.T) {
 		"# Rune Ticket: ticket me",
 		"- Tags: #agent",
 		"ticket detail",
-		"implement this ticket, $rune-agent\n",
+		"implement this ticket, $lune-agent\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ticket output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestRunTicketUsesProjectInstructionComment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	path := filepath.Join(home, "projects", "lune.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# lune",
+		"",
+		"<!-- rune-ticket-instruction: review this ticket with $lune-reviewer -->",
+		"",
+		"- [ ] custom handoff",
+		"<!-- rune:id=abc12345 type=task tags= created=2026-05-14T00:00:00Z -->",
+		"detail",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ticket", "abc", "--project", "lune"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("ticket code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "review this ticket with $lune-reviewer\n") || strings.Contains(got, "implement this ticket") {
+		t.Fatalf("ticket output = %q", got)
 	}
 }
 

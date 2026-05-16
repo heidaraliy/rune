@@ -11,10 +11,20 @@ const (
 	YankInstruction = "implement this ticket, " + YankAgent + "\n"
 )
 
+type YankOptions struct {
+	Agent       string
+	Instruction string
+}
+
 func YankTicketText(item *Item, home string) string {
+	return YankTicketTextWithOptions(item, home, YankOptionsForItem(item))
+}
+
+func YankTicketTextWithOptions(item *Item, home string, options YankOptions) string {
 	if item == nil {
 		return ""
 	}
+	options = normalizeYankOptions(options, itemYankProject(item))
 	var out strings.Builder
 	fmt.Fprintf(&out, "# Rune Ticket: %s\n\n", item.Title)
 	fmt.Fprintf(&out, "- ID: %s\n", item.DisplayID)
@@ -31,8 +41,84 @@ func YankTicketText(item *Item, home string) string {
 	out.WriteString("\n## Context\n\n```markdown\n")
 	out.WriteString(strings.Join(TicketContextLines(item), "\n"))
 	out.WriteString("\n```\n\n")
-	out.WriteString(YankInstruction)
+	out.WriteString(options.Instruction)
 	return out.String()
+}
+
+func YankOptionsForItem(item *Item) YankOptions {
+	project := itemYankProject(item)
+	options := YankOptions{Agent: DefaultYankAgent(project)}
+	if item == nil || item.Doc == nil {
+		return normalizeYankOptions(options, project)
+	}
+	if item.Doc.Kind != "project" {
+		return normalizeYankOptions(YankOptions{}, "")
+	}
+	for _, line := range item.Doc.Lines {
+		if _, _, _, _, ok := parseItemLine(line); ok {
+			break
+		}
+		if value, ok := parseYankComment(line, "rune-ticket-agent"); ok {
+			options.Agent = value
+		}
+		if value, ok := parseYankComment(line, "rune-ticket-instruction"); ok {
+			options.Instruction = DecodeEscapes(value)
+		}
+	}
+	return normalizeYankOptions(options, project)
+}
+
+func DefaultYankAgent(project string) string {
+	project = cleanKey(project)
+	if project == "" {
+		return YankAgent
+	}
+	return "$" + project + "-agent"
+}
+
+func itemYankProject(item *Item) string {
+	if item == nil {
+		return ""
+	}
+	if item.Doc != nil && item.Doc.Kind == "project" && item.Doc.Key != "" {
+		return item.Doc.Key
+	}
+	return item.Project
+}
+
+func normalizeYankOptions(options YankOptions, project string) YankOptions {
+	options.Agent = strings.TrimSpace(options.Agent)
+	if options.Agent == "" {
+		options.Agent = DefaultYankAgent(project)
+	}
+	options.Instruction = strings.TrimSpace(options.Instruction)
+	if options.Instruction == "" {
+		options.Instruction = "implement this ticket, " + options.Agent
+	} else if agent := yankAgentFromInstruction(options.Instruction); agent != "" && options.Agent == DefaultYankAgent(project) {
+		options.Agent = agent
+	}
+	options.Instruction = strings.TrimRight(options.Instruction, "\n") + "\n"
+	return options
+}
+
+func parseYankComment(line, key string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	prefix := "<!-- " + key + ":"
+	if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, "-->") {
+		return "", false
+	}
+	value := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, prefix), "-->"))
+	return value, value != ""
+}
+
+func yankAgentFromInstruction(instruction string) string {
+	for _, field := range strings.Fields(instruction) {
+		field = strings.Trim(field, ".,;:!?()[]{}\"'")
+		if strings.HasPrefix(field, "$") && len(field) > 1 {
+			return field
+		}
+	}
+	return ""
 }
 
 func ItemStatus(item *Item) string {
