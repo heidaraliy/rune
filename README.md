@@ -1,12 +1,25 @@
-# Rune
 
-Rune is a small terminal-native task tracker.
+<div align="center">
 
-It stores plain Markdown in `~/notes`, detects the current git project, and gives every item a short ID that's easy
-to use from shell. I made it because I keep having ideas in the middle of a session, ruminating about them for a 
-minute or two, and then forgetting to write it down.
+<pre>
+'||''| '||  ||` `||''|,  .|''|,
+ ||     ||  ||   ||  ||  ||..||
+.||.    `|..'|. .||  ||. `|...
+</pre>
 
-With Rune, you do that in a single, brief command: `rune add "the idea i would've forgot otherwise!"`
+<p>
+  <strong>Rune</strong> is a small terminal-native task tracker for catching ideas before they disappear.
+</p>
+
+<p>
+  <code>rune add "fix stuns" --tag combat,bug</code>
+</p>
+
+Rune stores plain Markdown in `~/notes`, detects the current git project, and gives every item a short ID that's easy to use from shell.
+
+</div>
+
+---
 
 ## Install
 
