@@ -327,11 +327,16 @@ func (d *Document) blockEnd(item *Item) int {
 }
 
 func (d *Document) updateMeta(item *Item) {
+	indent := ""
+	if item.Line >= 0 && item.Line < len(d.Lines) {
+		line := d.Lines[item.Line]
+		indent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	}
 	if item.MetaLine >= 0 && item.MetaLine < len(d.Lines) {
-		d.Lines[item.MetaLine] = renderMeta(item)
+		d.Lines[item.MetaLine] = indent + renderMeta(item)
 	} else {
 		insertAt := item.Line + 1
-		d.Lines = append(d.Lines[:insertAt], append([]string{renderMeta(item)}, d.Lines[insertAt:]...)...)
+		d.Lines = append(d.Lines[:insertAt], append([]string{indent + renderMeta(item)}, d.Lines[insertAt:]...)...)
 	}
 	d.changed = true
 	parseItems(d)
@@ -355,6 +360,50 @@ func (d *Document) updateItemLine(item *Item) {
 	}
 	d.changed = true
 	parseItems(d)
+}
+
+func (d *Document) setTaskDone(item *Item, done bool) {
+	if item == nil || item.Type != ItemTask {
+		return
+	}
+	item.Done = done
+	d.updateItemLine(item)
+}
+
+func (d *Document) taskDescendants(parent *Item) []*Item {
+	if parent == nil {
+		return nil
+	}
+	var descendants []*Item
+	for _, item := range d.Items {
+		if item.Line <= parent.Line {
+			continue
+		}
+		if item.Depth <= parent.Depth {
+			break
+		}
+		if item.Type == ItemTask {
+			descendants = append(descendants, item)
+		}
+	}
+	return descendants
+}
+
+func (d *Document) subtreeItems(parent *Item) []*Item {
+	if parent == nil {
+		return nil
+	}
+	var items []*Item
+	for _, item := range d.Items {
+		if item.Line < parent.Line {
+			continue
+		}
+		if item.Line > parent.Line && item.Depth <= parent.Depth {
+			break
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (d *Document) replaceBody(item *Item, body string) {
@@ -405,6 +454,10 @@ func (d *Document) RawBlock(item *Item) []string {
 	return d.rawBlock(item)
 }
 
+func (d *Document) rawSubtree(item *Item) []string {
+	return append([]string(nil), d.Lines[item.Line:d.subtreeEnd(item)]...)
+}
+
 func (d *Document) removeBlocks(items []*Item) [][]string {
 	sort.Slice(items, func(i, j int) bool { return items[i].Line > items[j].Line })
 	var blocks [][]string
@@ -415,6 +468,20 @@ func (d *Document) removeBlocks(items []*Item) [][]string {
 		for end < len(d.Lines) && strings.TrimSpace(d.Lines[end]) == "" {
 			end++
 		}
+		d.Lines = append(d.Lines[:item.Line], d.Lines[end:]...)
+	}
+	d.changed = true
+	parseItems(d)
+	return blocks
+}
+
+func (d *Document) removeSubtrees(items []*Item) [][]string {
+	sort.Slice(items, func(i, j int) bool { return items[i].Line > items[j].Line })
+	var blocks [][]string
+	for _, item := range items {
+		block := d.rawSubtree(item)
+		blocks = append(blocks, block)
+		end := d.subtreeEnd(item)
 		d.Lines = append(d.Lines[:item.Line], d.Lines[end:]...)
 	}
 	d.changed = true

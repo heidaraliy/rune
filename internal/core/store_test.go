@@ -68,6 +68,204 @@ func TestAddListEditAndDone(t *testing.T) {
 	}
 }
 
+func TestSetDoneCompletesNestedTaskDescendants(t *testing.T) {
+	home := t.TempDir()
+	path := ProjectPath(home, "meeco")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# meeco",
+		"",
+		"- [ ] parent ticket",
+		"<!-- rune:id=parent00 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"    - [ ] child ticket",
+		"    <!-- rune:id=child000 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"        - [ ] grandchild ticket",
+		"        <!-- rune:id=grand000 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"- [ ] sibling ticket",
+		"<!-- rune:id=sibling0 type=task tags= created=2026-05-16T00:00:00Z -->",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(home)
+	scope := Scope{Home: home, Project: "meeco"}
+	if _, err := store.SetDone(scope, "parent", true, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(updated)
+	for _, want := range []string{
+		"- [x] parent ticket",
+		"    - [x] child ticket",
+		"        - [x] grandchild ticket",
+		"- [ ] sibling ticket",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("updated markdown missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAddAssignsIDsToNestedBodyTasks(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	scope := Scope{Home: home, Project: "meeco"}
+	item, err := store.Add(scope, AddOptions{
+		Title: "parent tracker",
+		Body: strings.Join([]string{
+			"Goal: track child work.",
+			"",
+			"- [ ] first child",
+			"- [ ] second child",
+			"",
+			"Acceptance:",
+			"- plain detail",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	all, _, err := store.Items(scope, ListOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("items = %d, want parent, two children, plain detail: %#v", len(all), all)
+	}
+	for _, title := range []string{"first child", "second child"} {
+		var child *Item
+		for _, candidate := range all {
+			if candidate.Title == title {
+				child = candidate
+				break
+			}
+		}
+		if child == nil {
+			t.Fatalf("missing child %q in %#v", title, all)
+		}
+		if child.ID == "" || child.DisplayID == "" {
+			t.Fatalf("child %q has no ID/display ID: %#v", title, child)
+		}
+	}
+	if _, err := store.SetDone(scope, all[1].DisplayID, true, false, false); err != nil {
+		t.Fatalf("nested child was not individually completable: %v", err)
+	}
+	parent, err := store.SetDone(scope, item.DisplayID, true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parent.Done {
+		t.Fatalf("parent not done: %#v", parent)
+	}
+}
+
+func TestOpenFilterHidesDescendantsOfDoneTask(t *testing.T) {
+	home := t.TempDir()
+	path := ProjectPath(home, "meeco")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# meeco",
+		"",
+		"- [x] completed parent",
+		"<!-- rune:id=parent00 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"  Details:",
+		"  - plain detail without checkbox",
+		"    - [ ] unfinished child",
+		"    <!-- rune:id=child000 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"- [ ] open sibling",
+		"<!-- rune:id=sibling0 type=task tags= created=2026-05-16T00:00:00Z -->",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(home)
+	scope := Scope{Home: home, Project: "meeco"}
+	openItems, _, err := store.Items(scope, ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(openItems) != 1 || openItems[0].Title != "open sibling" {
+		t.Fatalf("open items = %#v, want only sibling", openItems)
+	}
+
+	doneItems, _, err := store.Items(scope, ListOptions{Done: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, item := range doneItems {
+		titles = append(titles, item.Title)
+	}
+	for _, want := range []string{"completed parent", "plain detail without checkbox", "unfinished child"} {
+		if !containsString(titles, want) {
+			t.Fatalf("done titles = %#v, missing %q", titles, want)
+		}
+	}
+}
+
+func TestArchiveDoneMovesCompletedSubtree(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	store.Now = func() time.Time { return time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC) }
+	scope := Scope{Home: home, Project: "meeco"}
+	path := ProjectPath(home, "meeco")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# meeco",
+		"",
+		"- [x] completed parent",
+		"<!-- rune:id=parent00 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"  - plain detail without checkbox",
+		"    - [x] completed child",
+		"    <!-- rune:id=child000 type=task tags= created=2026-05-16T00:00:00Z -->",
+		"- [ ] open sibling",
+		"<!-- rune:id=sibling0 type=task tags= created=2026-05-16T00:00:00Z -->",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	count, archivePath, err := store.ArchiveDone(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("archive count = %d, want 2", count)
+	}
+	project, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(project); strings.Contains(got, "completed parent") ||
+		strings.Contains(got, "plain detail without checkbox") ||
+		strings.Contains(got, "completed child") ||
+		!strings.Contains(got, "open sibling") {
+		t.Fatalf("project after archive:\n%s", got)
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(archive); !strings.Contains(got, "completed parent") ||
+		!strings.Contains(got, "plain detail without checkbox") ||
+		!strings.Contains(got, "completed child") {
+		t.Fatalf("archive missing completed subtree:\n%s", got)
+	}
+}
+
 func TestAddRequiresProjectScopeAndDoesNotCreateInbox(t *testing.T) {
 	home := t.TempDir()
 	store := NewStore(home)
@@ -395,4 +593,13 @@ func TestDecodeEscapes(t *testing.T) {
 	if got != want {
 		t.Fatalf("DecodeEscapes = %q, want %q", got, want)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
