@@ -549,11 +549,10 @@ func (m Model) View() string {
 	footer := m.renderFooter()
 	bodyHeight := m.bodyHeight()
 	bodyContentHeight := m.bodyContentHeight()
-	leftW, midW, rightW := paneWidths(m.width)
-	left := renderPane(m.renderLeft(paneContentWidth(leftW), bodyContentHeight), leftW, bodyHeight)
+	_, midW, rightW := paneWidths(m.width)
 	mid := renderPane(m.renderMiddle(paneContentWidth(midW), bodyContentHeight), midW, bodyHeight)
 	right := renderPane(m.renderRight(paneContentWidth(rightW), bodyContentHeight), rightW, bodyHeight)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, mid, right)
 	parts := []string{body, footer}
 	if top != "" {
 		parts = append([]string{top}, parts...)
@@ -640,22 +639,75 @@ func (m Model) renderTop() string {
 	if scope != "PROJECT" {
 		stats[0] = topStat(strings.ToLower(scope), name, projectStyle)
 	}
-	if m.query != "" {
-		stats[2] += topMetaStyle.Render("  / " + m.query)
-	}
 	innerWidth := boxInnerWidth(m.width)
 	lines := make([]string, 0, len(logo))
 	for i := range logo {
 		left := topStyle.Render(" ") + logoStyle.Render(logo[i])
-		right := stats[i] + topStyle.Render(" ")
-		gap := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
-		if gap < 2 {
-			gap = 2
+		center := ""
+		switch i {
+		case 0:
+			center = m.headerControlLine("Views", []headerChoice{
+				{label: "project", meta: name, active: !m.scope.Global},
+				{label: "global", meta: "all", active: m.scope.Global},
+			})
+		case 1:
+			center = m.headerControlLine("Filters", []headerChoice{
+				{label: "open", active: m.filter == filterOpen},
+				{label: "all", active: m.filter == filterAll},
+				{label: "done", active: m.filter == filterDone},
+			})
+		case 2:
+			if m.query != "" {
+				center = topMetaStyle.Render("/ " + m.query)
+			}
 		}
-		line := left + topStyle.Render(strings.Repeat(" ", gap)) + right
-		lines = append(lines, renderSolidLine(topStyle, innerWidth, line))
+		right := stats[i] + topStyle.Render(" ")
+		lines = append(lines, renderTopLine(innerWidth, left, center, right))
 	}
 	return renderBox(topBoxStyle, m.width, m.topHeight(), lines, topStyle)
+}
+
+func renderTopLine(width int, left, center, right string) string {
+	line := clipStyled(left, width)
+	remaining := width - lipgloss.Width(line)
+	if center != "" && remaining > 1 {
+		line += topStyle.Render(" ")
+		remaining--
+		center = clipStyled(center, remaining)
+		line += center
+		remaining -= lipgloss.Width(center)
+	}
+	if right != "" && remaining > 1 {
+		rightWidth := lipgloss.Width(right)
+		if rightWidth >= remaining {
+			line += topStyle.Render(" ") + clipStyled(right, remaining-1)
+		} else {
+			line += topStyle.Render(strings.Repeat(" ", remaining-rightWidth)) + right
+		}
+	}
+	return renderSolidLine(topStyle, width, line)
+}
+
+type headerChoice struct {
+	label  string
+	meta   string
+	active bool
+}
+
+func (m Model) headerControlLine(title string, choices []headerChoice) string {
+	parts := []string{headingStyle.Background(cosmicBase).Render(title)}
+	for _, choice := range choices {
+		text := choice.label
+		if choice.meta != "" && choice.active {
+			text += " " + choice.meta
+		}
+		if choice.active {
+			parts = append(parts, selectedStyle.Render(" "+text+" "))
+		} else {
+			parts = append(parts, topMetaStyle.Render(text))
+		}
+	}
+	return topStyle.Render(" ") + strings.Join(parts, topStyle.Render("  ")) + topStyle.Render(" ")
 }
 
 func topStat(label string, value string, style lipgloss.Style) string {
@@ -781,37 +833,6 @@ func (m Model) doneCountInScope() int {
 		}
 	}
 	return count
-}
-
-func (m Model) renderLeft(width, height int) string {
-	localLabel := "project"
-	localMeta := m.scope.Project
-	lines := []string{
-		headingStyle.Render("Views"),
-		viewLine(width, !m.scope.Global, localLabel, localMeta),
-		viewLine(width, m.scope.Global, "global", "all"),
-		"",
-		headingStyle.Render("Filters"),
-		viewLine(width, m.filter == filterOpen, "open", ""),
-		viewLine(width, m.filter == filterAll, "all", ""),
-		viewLine(width, m.filter == filterDone, "done", ""),
-	}
-	return fitLines(lines, width, height)
-}
-
-func viewLine(width int, active bool, label, meta string) string {
-	line := "  " + label
-	if meta != "" {
-		line += "  " + dimStyle.Render(meta)
-	}
-	if active {
-		line = "> " + label
-		if meta != "" {
-			line += " " + meta
-		}
-		return selectedStyle.Render(padStyled(clipStyled(line, width), width))
-	}
-	return line
 }
 
 func (m Model) renderMiddle(width, height int) string {
@@ -1015,39 +1036,13 @@ func paneWidths(total int) (int, int, int) {
 	if total <= 0 {
 		return 0, 0, 0
 	}
-	if total < 60 {
-		left := max(4, total/4)
-		mid := max(8, total*45/100)
-		if left+mid > total-4 {
-			mid = max(4, total-left-4)
-		}
-		right := total - left - mid
-		if right < 4 {
-			short := 4 - right
-			takeMid := min(short, max(0, mid-4))
-			mid -= takeMid
-			short -= takeMid
-			if short > 0 {
-				left = max(1, left-short)
-			}
-			right = total - left - mid
-		}
-		return left, mid, max(1, right)
+	mid := total / 2
+	right := total - mid
+	if total >= 8 {
+		mid = max(4, mid)
+		right = max(4, total-mid)
 	}
-	left := max(12, total*15/100)
-	mid := max(28, total*45/100)
-	right := total - left - mid
-	if right < 20 {
-		short := 20 - right
-		takeMid := min(short, max(0, mid-28))
-		mid -= takeMid
-		short -= takeMid
-		if short > 0 {
-			left = max(12, left-short)
-		}
-		right = total - left - mid
-	}
-	return left, mid, right
+	return 0, mid, right
 }
 
 func renderPane(content string, width, height int) string {

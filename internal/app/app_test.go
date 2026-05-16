@@ -113,10 +113,10 @@ func TestViewRowsDoNotExceedTerminalWidth(t *testing.T) {
 	}
 }
 
-func TestPaneWidthsUseRequestedFifteenFortyFiveLayout(t *testing.T) {
+func TestPaneWidthsUseFiftyFiftyBodyLayout(t *testing.T) {
 	left, mid, right := paneWidths(202)
-	if left != 30 || mid != 90 || right != 82 {
-		t.Fatalf("paneWidths(202) = %d/%d/%d, want 30/90/82", left, mid, right)
+	if left != 0 || mid != 101 || right != 101 {
+		t.Fatalf("paneWidths(202) = %d/%d/%d, want 0/101/101", left, mid, right)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestDepthIDStyleVariesByDepth(t *testing.T) {
 	}
 }
 
-func TestLeftPaneOmitsInactiveInboxAndStoreSections(t *testing.T) {
+func TestHeaderExposesViewAndFilterStateWithoutSidebar(t *testing.T) {
 	home := t.TempDir()
 	store := core.NewStore(home)
 	scope := core.Scope{Home: home, Project: "lune"}
@@ -198,11 +198,11 @@ func TestLeftPaneOmitsInactiveInboxAndStoreSections(t *testing.T) {
 		model = updated.(Model)
 		view := plainText(model.View())
 		if !strings.Contains(view, "Views") || !strings.Contains(view, "project") || !strings.Contains(view, "Filters") {
-			t.Fatalf("left pane labels disappeared after %q: %q", key.String(), view)
+			t.Fatalf("header controls disappeared after %q: %q", key.String(), view)
 		}
-		for _, unwanted := range []string{"inbox", "Store", home} {
+		for _, unwanted := range []string{"inbox", "Store", home, "global  all"} {
 			if strings.Contains(view, unwanted) {
-				t.Fatalf("left pane kept %q after %q: %q", unwanted, key.String(), view)
+				t.Fatalf("view kept sidebar-era text %q after %q: %q", unwanted, key.String(), view)
 			}
 		}
 	}
@@ -507,9 +507,20 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 	}
 	if !strings.Contains(top, "'||''|") ||
 		!strings.Contains(top, "project: lune") ||
+		!strings.Contains(top, "Views") ||
+		!strings.Contains(top, "project lune") ||
+		!strings.Contains(top, "Filters") ||
+		!strings.Contains(top, "open") ||
 		!strings.Contains(top, "todo: 1") ||
 		!strings.Contains(top, "done: 1") {
 		t.Fatalf("top bar = %q", top)
+	}
+	narrow := model
+	narrow.width = 80
+	narrow.scope.Project = "tui-header-controls-split"
+	narrowTop := plainText(narrow.renderTop())
+	if !strings.Contains(narrowTop, "Views") || !strings.Contains(narrowTop, "Filters") {
+		t.Fatalf("narrow top bar dropped controls: %q", narrowTop)
 	}
 	footer := plainText(model.renderFooter())
 	footerLines := strings.Split(footer, "\n")
