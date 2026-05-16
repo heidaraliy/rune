@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
@@ -571,6 +572,61 @@ func TestFooterHeightAndColorsReflectExpandedControls(t *testing.T) {
 	model.status = "Saved."
 	if got := model.footerHeight(); got != 3 {
 		t.Fatalf("status footer height = %d, want 3", got)
+	}
+}
+
+func TestAddFooterWrapsLongInputAndShrinksBody(t *testing.T) {
+	home := t.TempDir()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune"}
+	if _, err := store.Add(scope, core.AddOptions{Title: "selected task"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width = 44
+	model.height = 18
+	model.mode = modeAdd
+	model.input.Focus()
+	model.input.SetValue("this is a long note title that should wrap into more than one footer input row")
+
+	rows := model.addInputRows(boxInnerWidth(model.width))
+	if len(rows) < 2 {
+		t.Fatalf("add input rows = %d, want wrapped rows: %q", len(rows), plainText(strings.Join(rows, "\n")))
+	}
+	if got, want := model.footerHeight(), len(rows)+2; got != want {
+		t.Fatalf("footer height = %d, want %d", got, want)
+	}
+	if got := model.bodyHeight(); got >= 18-model.topHeight()-3 {
+		t.Fatalf("body height did not shrink for wrapped input: %d", got)
+	}
+	viewLines := strings.Split(model.View(), "\n")
+	if len(viewLines) != model.height {
+		t.Fatalf("view line count = %d, want %d: %q", len(viewLines), model.height, plainText(model.View()))
+	}
+	for row, line := range viewLines {
+		if got := lipgloss.Width(line); got > model.width {
+			t.Fatalf("row %d width = %d, want <= %d: %q", row, got, model.width, line)
+		}
+	}
+}
+
+func TestAddFooterKeepsCursorRowVisibleWhenWrappedInputIsCapped(t *testing.T) {
+	model := Model{width: 28, height: 12, mode: modeAdd}
+	model.input = textinput.New()
+	model.input.Prompt = "> "
+	model.input.Focus()
+	model.input.SetValue("one two three four five six seven eight nine ten eleven twelve")
+
+	rows := model.addInputRows(boxInnerWidth(model.width))
+	if got, limit := len(rows), model.maxAddInputRows(); got != limit {
+		t.Fatalf("add input rows = %d, want capped rows %d: %q", got, limit, plainText(strings.Join(rows, "\n")))
+	}
+	rendered := plainText(strings.Join(rows, "\n"))
+	if !strings.Contains(rendered, "twelve") {
+		t.Fatalf("capped wrapped input did not keep cursor row visible: %q", rendered)
 	}
 }
 
