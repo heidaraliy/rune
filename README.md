@@ -96,12 +96,20 @@ still include Markdown and multiline details.
 Use `rune show <id>` for a quick human-readable view of an item in the
 terminal.
 
-`rune yank <id>` and TUI `y` copy an agent-ready ticket for `$rune-agent` to the
-system clipboard. Inside tmux Rune also mirrors the ticket into a `rune-ticket`
-tmux buffer, so prefix + paste can send it into another pane without relying on
-a remote device clipboard. Use `rune ticket <id>` or `rune yank <id> --print` to
-write the ticket to stdout, and `rune codex <id>` to start Codex directly with
-that ticket as the prompt.
+`rune yank <id>` and TUI `y` copy an agent-ready ticket to the system clipboard.
+Project files use their project agent by default, such as `$lune-agent` for
+`projects/lune.md`. Inside tmux Rune also mirrors the ticket into a
+`rune-ticket` tmux buffer, so prefix + paste can send it into another pane
+without relying on a remote device clipboard. Use `rune ticket <id>` or
+`rune yank <id> --print` to write the ticket to stdout, and `rune codex <id>` to
+start Codex directly with that ticket as the prompt.
+
+Add a top-level project comment to override the ticket handoff text.
+
+```md
+<!-- rune-ticket-agent: $custom-agent -->
+<!-- rune-ticket-instruction: implement this ticket, $custom-agent -->
+```
 
 ## TUI
 

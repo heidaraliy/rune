@@ -249,12 +249,13 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "y":
 		if item := m.current(); item != nil {
-			text := m.yankTicketText(item)
+			options := m.yankTicketOptions(item)
+			text := core.YankTicketTextWithOptions(item, m.scope.Home, options)
 			result, err := handoff.YankTicket(text, writeClipboard, tmuxSession(), writeTmuxBuffer)
 			if err != nil {
 				return m.setStatus("Yank failed: " + err.Error())
 			}
-			return m.setStatus(handoff.YankStatus(item.DisplayID, core.YankAgent, result))
+			return m.setStatus(handoff.YankStatus(item.DisplayID, options.Agent, result))
 		}
 	}
 	return m, nil
@@ -802,7 +803,11 @@ func renderSolidLine(style lipgloss.Style, width int, content string) string {
 }
 
 func (m Model) yankTicketText(item *core.Item) string {
-	return core.YankTicketText(item, m.scope.Home)
+	return core.YankTicketTextWithOptions(item, m.scope.Home, m.yankTicketOptions(item))
+}
+
+func (m Model) yankTicketOptions(item *core.Item) core.YankOptions {
+	return core.YankOptionsForItem(item)
 }
 
 func (m Model) taskStats() (int, int) {

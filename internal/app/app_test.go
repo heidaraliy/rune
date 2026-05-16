@@ -574,7 +574,7 @@ func TestFooterHeightAndColorsReflectExpandedControls(t *testing.T) {
 	}
 }
 
-func TestYankCopiesTicketContextForRuneAgent(t *testing.T) {
+func TestYankCopiesTicketContextForProjectAgent(t *testing.T) {
 	home := t.TempDir()
 	store := core.NewStore(home)
 	scope := core.Scope{Home: home, Project: "lune"}
@@ -641,7 +641,7 @@ func TestYankCopiesTicketContextForRuneAgent(t *testing.T) {
 		"    - [ ] selected ticket",
 		"      details for agent",
 		"        - [ ] child detail",
-		"implement this ticket, $rune-agent\n",
+		"implement this ticket, $lune-agent\n",
 	} {
 		if !strings.Contains(copied, want) {
 			t.Fatalf("copied ticket missing %q:\n%s", want, copied)
@@ -650,7 +650,7 @@ func TestYankCopiesTicketContextForRuneAgent(t *testing.T) {
 	if strings.Contains(copied, "sibling should stay out") {
 		t.Fatalf("copied ticket included sibling context:\n%s", copied)
 	}
-	if !strings.Contains(model.status, "Yanked bbb for $rune-agent.") {
+	if !strings.Contains(model.status, "Yanked bbb for $lune-agent.") {
 		t.Fatalf("status = %q", model.status)
 	}
 }

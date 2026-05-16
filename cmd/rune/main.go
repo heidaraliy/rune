@@ -240,7 +240,7 @@ func runYank(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	_, item, text, err := resolveTicket(cwd, *global, *project, pos, "yank")
+	_, item, options, text, err := resolveTicket(cwd, *global, *project, pos, "yank")
 	if err != nil {
 		return err
 	}
@@ -252,7 +252,7 @@ func runYank(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return fmt.Errorf("yank failed: %w", err)
 	}
-	fmt.Fprintln(stdout, handoff.YankStatus(item.DisplayID, core.YankAgent, result))
+	fmt.Fprintln(stdout, handoff.YankStatus(item.DisplayID, options.Agent, result))
 	return nil
 }
 
@@ -265,7 +265,7 @@ func runTicket(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	_, _, text, err := resolveTicket(cwd, *global, *project, pos, "ticket")
+	_, _, _, text, err := resolveTicket(cwd, *global, *project, pos, "ticket")
 	if err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 	if err != nil {
 		return err
 	}
-	scope, _, text, err := resolveTicket(cwd, *global, *project, pos, "codex")
+	scope, _, _, text, err := resolveTicket(cwd, *global, *project, pos, "codex")
 	if err != nil {
 		return err
 	}
@@ -292,19 +292,20 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 	return nil
 }
 
-func resolveTicket(cwd string, global bool, project string, pos []string, command string) (core.Scope, *core.Item, string, error) {
+func resolveTicket(cwd string, global bool, project string, pos []string, command string) (core.Scope, *core.Item, core.YankOptions, string, error) {
 	if len(pos) != 1 {
-		return core.Scope{}, nil, "", fmt.Errorf("%s requires one id", command)
+		return core.Scope{}, nil, core.YankOptions{}, "", fmt.Errorf("%s requires one id", command)
 	}
 	scope, store, err := scopedStore(cwd, global, project)
 	if err != nil {
-		return core.Scope{}, nil, "", err
+		return core.Scope{}, nil, core.YankOptions{}, "", err
 	}
 	item, _, err := store.Resolve(scope, pos[0], global)
 	if err != nil {
-		return core.Scope{}, nil, "", err
+		return core.Scope{}, nil, core.YankOptions{}, "", err
 	}
-	return scope, item, core.YankTicketText(item, scope.Home), nil
+	options := core.YankOptionsForItem(item)
+	return scope, item, options, core.YankTicketTextWithOptions(item, scope.Home, options), nil
 }
 
 func runEdit(args []string, stdout io.Writer, stdin io.Reader, cwd string) error {
