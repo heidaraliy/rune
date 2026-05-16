@@ -402,7 +402,11 @@ func (m Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
+	before := m.footerHeight()
 	m.input, cmd = m.input.Update(msg)
+	if m.footerHeight() != before {
+		m.ensureSelectedVisible()
+	}
 	return m, cmd
 }
 
@@ -484,10 +488,21 @@ func (m Model) footerHeight() int {
 }
 
 func (m Model) footerContentHeight() int {
-	if m.mode == modeSearch || m.mode == modeAdd || m.mode == modeConfirm || m.status != "" {
+	if m.mode == modeAdd {
+		return len(m.addInputRows(boxInnerWidth(m.width)))
+	}
+	if m.mode == modeSearch || m.mode == modeConfirm || m.status != "" {
 		return 1
 	}
 	return 2
+}
+
+func (m Model) maxAddInputRows() int {
+	if m.height <= 0 {
+		return 8
+	}
+	available := m.height - m.topHeight() - 3 - 2
+	return max(1, available)
 }
 
 func (m *Model) ensureSelectedVisible() {
@@ -717,7 +732,10 @@ func topStat(label string, value string, style lipgloss.Style) string {
 
 func (m Model) renderFooter() string {
 	innerWidth := boxInnerWidth(m.width)
-	if m.mode == modeSearch || m.mode == modeAdd {
+	if m.mode == modeAdd {
+		return renderFooterBox(m.width, m.addInputRows(innerWidth), footerBarStyle)
+	}
+	if m.mode == modeSearch {
 		content := footerBarStyle.Render(" " + m.input.View())
 		return renderFooterBox(m.width, []string{renderSolidLine(footerBarStyle, innerWidth, content)}, footerBarStyle)
 	}
@@ -750,6 +768,78 @@ func (m Model) renderFooter() string {
 			{"q", "quit"},
 		}),
 	}, footerBarStyle)
+}
+
+func (m Model) addInputRows(width int) []string {
+	rows, cursorRow := wrappedInputRows(m.input, width)
+	if limit := m.maxAddInputRows(); len(rows) > limit {
+		start := clamp(cursorRow-limit+1, 0, len(rows)-limit)
+		rows = rows[start : start+limit]
+	}
+	for idx, row := range rows {
+		rows[idx] = renderSolidLine(footerBarStyle, width, row)
+	}
+	return rows
+}
+
+func wrappedInputRows(input textinput.Model, width int) ([]string, int) {
+	if width <= 0 {
+		return []string{""}, 0
+	}
+	if input.Value() == "" {
+		return []string{footerBarStyle.Render(" ") + input.View()}, 0
+	}
+
+	prefixWidth := lipgloss.Width(" " + input.Prompt)
+	prefix := footerBarStyle.Render(" ") + input.PromptStyle.Render(input.Prompt)
+	continuationPrefix := footerBarStyle.Render(strings.Repeat(" ", max(1, prefixWidth)))
+	value := []rune(input.Value())
+	position := clamp(input.Position(), 0, len(value))
+
+	var rows []string
+	row := prefix
+	rowWidth := prefixWidth
+	cursorRow := 0
+	appendRow := func() {
+		rows = append(rows, row)
+		row = continuationPrefix
+		rowWidth = prefixWidth
+	}
+
+	for idx := 0; idx <= len(value); idx++ {
+		if idx == position {
+			char := " "
+			if idx < len(value) {
+				char = string(value[idx])
+			}
+			cursor := input.Cursor
+			cursor.SetChar(char)
+			cell := cursor.View()
+			cellWidth := max(1, lipgloss.Width(char))
+			if rowWidth+cellWidth > width && rowWidth > prefixWidth {
+				appendRow()
+			}
+			row += cell
+			rowWidth += cellWidth
+			cursorRow = len(rows)
+			if idx < len(value) {
+				continue
+			}
+			break
+		}
+		if idx >= len(value) {
+			break
+		}
+		cell := input.TextStyle.Inline(true).Render(string(value[idx]))
+		cellWidth := max(1, lipgloss.Width(string(value[idx])))
+		if rowWidth+cellWidth > width && rowWidth > prefixWidth {
+			appendRow()
+		}
+		row += cell
+		rowWidth += cellWidth
+	}
+	rows = append(rows, row)
+	return rows, cursorRow
 }
 
 type footerHint struct {
