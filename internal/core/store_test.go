@@ -103,6 +103,7 @@ func TestSetDoneCompletesNestedTaskDescendants(t *testing.T) {
 	got := string(updated)
 	for _, want := range []string{
 		"- [x] parent ticket",
+		"finished_at=",
 		"    - [x] child ticket",
 		"        - [x] grandchild ticket",
 		"- [ ] sibling ticket",
@@ -110,6 +111,95 @@ func TestSetDoneCompletesNestedTaskDescendants(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("updated markdown missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestSetDoneWritesAndClearsFinishedAt(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	store.Now = func() time.Time { return time.Date(2026, 5, 17, 14, 30, 0, 0, time.UTC) }
+	scope := Scope{Home: home, Project: "rune"}
+	item, err := store.Add(scope, AddOptions{Title: "capture completion time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done, err := store.SetDone(scope, item.ID, true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Finished.IsZero() || done.Finished.Format(time.RFC3339) != "2026-05-17T14:30:00Z" {
+		t.Fatalf("finished_at = %s", done.Finished.Format(time.RFC3339))
+	}
+	projectPath := ProjectPath(home, "rune")
+	updated, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), "finished_at=2026-05-17T14:30:00Z") {
+		t.Fatalf("metadata missing finished_at:\n%s", updated)
+	}
+
+	reopened, err := store.SetDone(scope, item.ID, false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Finished.IsZero() {
+		t.Fatalf("reopened item kept finished_at = %s", reopened.Finished.Format(time.RFC3339))
+	}
+	updated, err = os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updated), "finished_at=") {
+		t.Fatalf("metadata kept finished_at after reopen:\n%s", updated)
+	}
+}
+
+func TestItemsSortByCreatedAndFinishedAt(t *testing.T) {
+	home := t.TempDir()
+	projectPath := ProjectPath(home, "rune")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# rune",
+		"",
+		"- [x] middle created latest done",
+		"<!-- rune:id=middle00 type=task tags= created=2026-05-17T09:00:00Z finished_at=2026-05-17T10:00:00Z -->",
+		"- [x] early created later done",
+		"<!-- rune:id=early000 type=task tags= created=2026-05-17T08:00:00Z finished_at=2026-05-17T12:00:00Z -->",
+		"- [ ] no finish",
+		"<!-- rune:id=open0000 type=task tags= created=2026-05-17T07:00:00Z -->",
+	}, "\n")
+	if err := os.WriteFile(projectPath, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(home)
+	scope := Scope{Home: home, Project: "rune"}
+
+	created, _, err := store.Items(scope, ListOptions{All: true, Sort: SortCreatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := titles(created), "no finish|early created later done|middle created latest done"; got != want {
+		t.Fatalf("created sort = %s, want %s", got, want)
+	}
+
+	finished, _, err := store.Items(scope, ListOptions{All: true, Sort: SortFinishedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := titles(finished), "middle created latest done|early created later done|no finish"; got != want {
+		t.Fatalf("finished sort = %s, want %s", got, want)
+	}
+
+	reversed, _, err := store.Items(scope, ListOptions{All: true, Sort: SortCreatedAt, Reverse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := titles(reversed), "middle created latest done|early created later done|no finish"; got != want {
+		t.Fatalf("reverse created sort = %s, want %s", got, want)
 	}
 }
 
@@ -602,4 +692,12 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func titles(items []*Item) string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.Title)
+	}
+	return strings.Join(out, "|")
 }

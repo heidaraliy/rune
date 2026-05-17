@@ -173,8 +173,10 @@ func runList(args []string, stdout io.Writer, cwd string) error {
 	done := fs.Bool("done", false, "done items")
 	tag := fs.String("tag", "", "tag")
 	project := fs.String("project", "", "project")
+	sortBy := fs.String("sort", "", "sort by created_at or finished_at")
+	reverse := fs.Bool("reverse", false, "reverse sort")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"tag": true, "project": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"tag": true, "project": true, "sort": true})
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,7 @@ func runList(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	items, _, err := store.Items(scope, core.ListOptions{All: *all, Done: *done, Tag: *tag, Global: *global, Project: *project})
+	items, _, err := store.Items(scope, core.ListOptions{All: *all, Done: *done, Tag: *tag, Sort: *sortBy, Reverse: *reverse, Global: *global, Project: *project})
 	if err != nil {
 		return err
 	}
@@ -418,7 +420,9 @@ func runFind(args []string, stdout io.Writer, cwd string) error {
 	global := fs.Bool("global", false, "all projects")
 	project := fs.String("project", "", "project")
 	tag := fs.String("tag", "", "tag")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "tag": true})
+	sortBy := fs.String("sort", "", "sort by created_at or finished_at")
+	reverse := fs.Bool("reverse", false, "reverse sort")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "tag": true, "sort": true})
 	if err != nil {
 		return err
 	}
@@ -429,7 +433,7 @@ func runFind(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	items, _, err := store.Items(scope, core.ListOptions{All: true, Query: strings.Join(pos, " "), Tag: *tag, Global: *global, Project: *project})
+	items, _, err := store.Items(scope, core.ListOptions{All: true, Query: strings.Join(pos, " "), Tag: *tag, Sort: *sortBy, Reverse: *reverse, Global: *global, Project: *project})
 	if err != nil {
 		return err
 	}
@@ -957,7 +961,7 @@ func printUsage(w io.Writer) {
 Usage:
   rune
   rune add "fix stuns" --tag combat,bug
-  rune list [--global] [--all] [--done] [--tag tag]
+  rune list [--global] [--all] [--done] [--tag tag] [--sort created_at|finished_at] [--reverse]
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id>

@@ -70,7 +70,7 @@ ID.
 
 ```sh
 rune add "text" [--tag a,b] [--project p] [--note] [--body "..."]
-rune list [--global] [--all] [--done] [--tag t] [--project p] [--json]
+rune list [--global] [--all] [--done] [--tag t] [--project p] [--sort created_at|finished_at] [--reverse] [--json]
 rune show <id> [--raw]
 rune yank <id> [--print]
 rune ticket <id>
