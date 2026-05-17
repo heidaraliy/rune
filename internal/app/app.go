@@ -161,15 +161,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editorFinishedMsg:
 		if msg.err != nil {
 			return m.setStatus(msg.err.Error())
-		} else {
-			_ = m.reload()
-			return m.setStatus("Editor closed.")
 		}
+		return m.refreshItems("Editor closed. Refreshed.")
 	case codexFinishedMsg:
 		if msg.err != nil {
 			return m.setStatus("Codex failed: " + msg.err.Error())
 		}
-		return m.setStatus("Codex closed.")
+		return m.refreshItems("Codex closed. Refreshed.")
 	}
 	return m, nil
 }
@@ -186,6 +184,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveSelection(m.pageSize())
 	case "pgup", "pageup", "ctrl+u":
 		m.moveSelection(-m.pageSize())
+	case "r":
+		return m.refreshItems("Refreshed.")
 	case "H", "h", "left":
 		return m.collapseCurrent()
 	case "L", "l", "right":
@@ -328,6 +328,21 @@ func (m Model) toggleCurrent() (tea.Model, tea.Cmd) {
 		return m.setStatus("Toggled " + updated.DisplayID + ".")
 	}
 	return m, nil
+}
+
+func (m Model) refreshItems(message string) (Model, tea.Cmd) {
+	selectedID := ""
+	if item := m.current(); item != nil {
+		selectedID = item.ID
+	}
+	if err := m.reload(); err != nil {
+		return m.setStatus(err.Error())
+	}
+	if selectedID != "" {
+		m.selectItem(selectedID)
+		m.ensureSelectedVisible()
+	}
+	return m.setStatus(message)
 }
 
 func (m Model) collapseCurrent() (tea.Model, tea.Cmd) {
@@ -975,19 +990,20 @@ func (m Model) renderFooter() string {
 		renderFooterRow(innerWidth, []footerHint{
 			{"j/k", "move"},
 			{"pg ^u/^d", "page"},
+			{"r", "refresh"},
 			{"h/l", "fold"},
 			{"spc", "done"},
 			{"a", "below"},
 			{"A", "above"},
 			{"e", "edit"},
 			{"y", "yank"},
-			{"c", "codex"},
 		}),
 		renderFooterRow(innerWidth, []footerHint{
 			{"/", "search"},
 			{"f", "filter"},
 			{"s", "sort"},
 			{"S", "dir"},
+			{"c", "codex"},
 			{"g", "global"},
 			{"t", "top"},
 			{"x", "archive"},
@@ -1099,7 +1115,7 @@ func footerKeyStyleFor(key string) lipgloss.Style {
 		color = cosmicAmber
 	case "a", "A", "e", "y", "c", "y/enter":
 		color = cosmicGreen
-	case "g", "t", "h/l", "s", "S":
+	case "g", "t", "h/l", "s", "S", "r":
 		color = cosmicViolet
 	case "x", "q", "n/esc":
 		color = lipgloss.Color("203")
