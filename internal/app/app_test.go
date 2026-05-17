@@ -450,7 +450,8 @@ func TestCodexLaunchRequiresConfirmation(t *testing.T) {
 	home := t.TempDir()
 	store := core.NewStore(home)
 	scope := core.Scope{Home: home, Project: "lune", CWD: t.TempDir()}
-	if _, err := store.Add(scope, core.AddOptions{Title: "codex task", Body: "launch detail"}); err != nil {
+	item, err := store.Add(scope, core.AddOptions{Title: "codex task", Body: "launch detail"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	model, err := New(store, scope)
@@ -514,11 +515,47 @@ func TestCodexLaunchRequiresConfirmation(t *testing.T) {
 	if !strings.Contains(launchedPrompt, "# Rune Ticket: codex task") || !strings.Contains(launchedPrompt, "launch detail") {
 		t.Fatalf("codex prompt = %q", launchedPrompt)
 	}
+	if _, err := store.SetDone(scope, item.ID, true, false, false); err != nil {
+		t.Fatal(err)
+	}
 	msg := cmd()
 	updated, _ = model.Update(msg)
 	model = updated.(Model)
-	if !strings.Contains(model.status, "Codex closed.") {
+	if !strings.Contains(model.status, "Codex closed. Refreshed.") {
 		t.Fatalf("status after codex command = %q", model.status)
+	}
+	if len(model.items) != 0 {
+		t.Fatalf("codex return did not refresh stale closed item out of open list: %#v", model.items)
+	}
+}
+
+func TestManualRefreshReloadsItems(t *testing.T) {
+	home := t.TempDir()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune"}
+	item, err := store.Add(scope, core.AddOptions{Title: "external close"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.items) != 1 {
+		t.Fatalf("items before external change = %#v", model.items)
+	}
+	if _, err := store.SetDone(scope, item.ID, true, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = updated.(Model)
+
+	if model.status != "Refreshed." {
+		t.Fatalf("refresh status = %q", model.status)
+	}
+	if len(model.items) != 0 {
+		t.Fatalf("manual refresh kept stale item: %#v", model.items)
 	}
 }
 
@@ -643,7 +680,7 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 			t.Fatalf("footer line %d width = %d, want %d: %q", idx, got, model.width, footer)
 		}
 	}
-	for _, want := range []string{"pg ^u/^d page", "h/l fold", "a below", "A above", "y yank", "c codex", "s sort", "S dir", "t top", "x archive"} {
+	for _, want := range []string{"pg ^u/^d page", "r refresh", "h/l fold", "a below", "A above", "y yank", "c codex", "s sort", "S dir", "t top", "x archive"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer missing %q: %q", want, footer)
 		}

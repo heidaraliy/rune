@@ -127,6 +127,7 @@ c open ticket in Codex
 f cycle open/all/done
 s cycle document/created/finished sort
 S reverse sort direction
+r refresh
 g toggle project/global
 x archive completed
 q quit
