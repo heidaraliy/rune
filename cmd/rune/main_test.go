@@ -120,6 +120,43 @@ func TestRunListFormatsReadableCards(t *testing.T) {
 	}
 }
 
+func TestRunListSortsByTimestamps(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	projectPath := filepath.Join(home, "projects", "pretty.md")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		"# pretty",
+		"",
+		"- [x] first finished",
+		"<!-- rune:id=first000 type=task tags= created=2026-05-17T09:00:00Z finished_at=2026-05-17T10:00:00Z -->",
+		"- [x] second finished",
+		"<!-- rune:id=second00 type=task tags= created=2026-05-17T08:00:00Z finished_at=2026-05-17T12:00:00Z -->",
+		"- [ ] unfinished",
+		"<!-- rune:id=open0000 type=task tags= created=2026-05-17T07:00:00Z -->",
+	}, "\n")
+	if err := os.WriteFile(projectPath, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"list", "--all", "--project", "pretty", "--sort", "created_at"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("created sort code = %d, stderr=%q", code, stderr.String())
+	}
+	assertOutputOrder(t, stdout.String(), "unfinished", "second finished", "first finished")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"list", "--all", "--project", "pretty", "--sort", "finished_at"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("finished sort code = %d, stderr=%q", code, stderr.String())
+	}
+	assertOutputOrder(t, stdout.String(), "first finished", "second finished", "unfinished")
+}
+
 func TestRunShowFormatsHumanReadableDetail(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
@@ -537,5 +574,20 @@ func TestRunVersion(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "rune 1.2.3" {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func assertOutputOrder(t *testing.T, output string, values ...string) {
+	t.Helper()
+	previous := -1
+	for _, value := range values {
+		next := strings.Index(output, value)
+		if next < 0 {
+			t.Fatalf("output missing %q:\n%s", value, output)
+		}
+		if next <= previous {
+			t.Fatalf("output order expected %q after previous item:\n%s", value, output)
+		}
+		previous = next
 	}
 }

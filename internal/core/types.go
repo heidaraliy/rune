@@ -36,6 +36,7 @@ type Item struct {
 	Done      bool
 	Tags      []string
 	Created   time.Time
+	Finished  time.Time
 	Heading   string
 	Depth     int
 	Project   string
@@ -60,6 +61,8 @@ type ListOptions struct {
 	Done    bool
 	Tag     string
 	Query   string
+	Sort    string
+	Reverse bool
 	Global  bool
 	Project string
 }

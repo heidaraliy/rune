@@ -257,6 +257,9 @@ func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions
 }
 
 func (s Store) Items(scope Scope, opts ListOptions) ([]*Item, []*Document, error) {
+	if _, err := NormalizeSort(opts.Sort); err != nil {
+		return nil, nil, err
+	}
 	if opts.Global {
 		scope.Global = true
 	}
@@ -300,7 +303,63 @@ func FilterItems(items []*Item, opts ListOptions) []*Item {
 		}
 		out = append(out, item)
 	}
+	sortItems(out, opts)
 	return out
+}
+
+const (
+	SortCreatedAt  = "created_at"
+	SortFinishedAt = "finished_at"
+)
+
+func NormalizeSort(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "document", "doc":
+		return "", nil
+	case "created", "created_at":
+		return SortCreatedAt, nil
+	case "finished", "finished_at", "done_at", "completed_at":
+		return SortFinishedAt, nil
+	default:
+		return "", fmt.Errorf("unknown sort %q; use created_at or finished_at", value)
+	}
+}
+
+func sortItems(items []*Item, opts ListOptions) {
+	sortField, err := NormalizeSort(opts.Sort)
+	if err != nil || sortField == "" {
+		return
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left := itemSortTime(items[i], sortField)
+		right := itemSortTime(items[j], sortField)
+		leftZero := left.IsZero()
+		rightZero := right.IsZero()
+		if leftZero != rightZero {
+			return !leftZero
+		}
+		if left.Equal(right) {
+			return false
+		}
+		if opts.Reverse {
+			return left.After(right)
+		}
+		return left.Before(right)
+	})
+}
+
+func itemSortTime(item *Item, sortField string) time.Time {
+	if item == nil {
+		return time.Time{}
+	}
+	switch sortField {
+	case SortCreatedAt:
+		return item.Created
+	case SortFinishedAt:
+		return item.Finished
+	default:
+		return time.Time{}
+	}
 }
 
 func itemEffectivelyDone(item *Item) bool {
@@ -442,12 +501,15 @@ func (s Store) SetDone(scope Scope, prefix string, done bool, toggle bool, globa
 	} else {
 		item.Done = done
 	}
-	item.Doc.updateItemLine(item)
+	finishedAt := s.now()
+	item = item.Doc.setTaskDoneAt(item, item.Done, finishedAt)
+	if item == nil {
+		return nil, errors.New("updated item disappeared")
+	}
 	if item.Done {
-		item = findByID(item.Doc, item.ID)
 		for _, child := range item.Doc.taskDescendants(item) {
 			if !child.Done {
-				item.Doc.setTaskDone(child, true)
+				item.Doc.setTaskDoneAt(child, true, finishedAt)
 			}
 		}
 	}
@@ -797,6 +859,8 @@ type JSONItem struct {
 	Title      string   `json:"title"`
 	Done       bool     `json:"done"`
 	Tags       []string `json:"tags"`
+	CreatedAt  string   `json:"created_at,omitempty"`
+	FinishedAt string   `json:"finished_at,omitempty"`
 	Project    string   `json:"project"`
 	Source     string   `json:"source"`
 	Line       int      `json:"line"`
@@ -807,7 +871,7 @@ type JSONItem struct {
 func ItemsJSON(items []*Item) ([]byte, error) {
 	out := make([]JSONItem, 0, len(items))
 	for _, item := range items {
-		out = append(out, JSONItem{
+		jsonItem := JSONItem{
 			ID:         item.DisplayID,
 			InternalID: item.ID,
 			Type:       item.Type,
@@ -819,7 +883,14 @@ func ItemsJSON(items []*Item) ([]byte, error) {
 			Line:       item.Line + 1,
 			Depth:      item.Depth,
 			Body:       item.Body(),
-		})
+		}
+		if !item.Created.IsZero() {
+			jsonItem.CreatedAt = item.Created.UTC().Format(time.RFC3339)
+		}
+		if !item.Finished.IsZero() {
+			jsonItem.FinishedAt = item.Finished.UTC().Format(time.RFC3339)
+		}
+		out = append(out, jsonItem)
 	}
 	return json.MarshalIndent(out, "", "  ")
 }

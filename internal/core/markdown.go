@@ -76,7 +76,8 @@ func parseItems(doc *Document) {
 			Title:     title,
 			Done:      done,
 			Tags:      parseTags(meta["tags"]),
-			Created:   parseTime(meta["created"]),
+			Created:   parseTime(firstNonEmpty(meta["created"], meta["created_at"])),
+			Finished:  parseTime(firstNonEmpty(meta["finished_at"], meta["finished"])),
 			Heading:   heading,
 			Depth:     depth,
 			Project:   doc.Key,
@@ -188,7 +189,25 @@ func renderMeta(item *Item) string {
 		created = time.Now().UTC()
 	}
 	tags := strings.Join(normalizeTags(item.Tags), ",")
-	return fmt.Sprintf("<!-- rune:id=%s type=%s tags=%s created=%s -->", item.ID, item.Type, tags, created.UTC().Format(time.RFC3339))
+	fields := []string{
+		fmt.Sprintf("id=%s", item.ID),
+		fmt.Sprintf("type=%s", item.Type),
+		fmt.Sprintf("tags=%s", tags),
+		fmt.Sprintf("created=%s", created.UTC().Format(time.RFC3339)),
+	}
+	if !item.Finished.IsZero() {
+		fields = append(fields, fmt.Sprintf("finished_at=%s", item.Finished.UTC().Format(time.RFC3339)))
+	}
+	return "<!-- rune:" + strings.Join(fields, " ") + " -->"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseTags(value string) []string {
@@ -362,12 +381,33 @@ func (d *Document) updateItemLine(item *Item) {
 	parseItems(d)
 }
 
-func (d *Document) setTaskDone(item *Item, done bool) {
+func (d *Document) setTaskDoneAt(item *Item, done bool, finishedAt time.Time) *Item {
 	if item == nil || item.Type != ItemTask {
-		return
+		return item
 	}
+	id := item.ID
 	item.Done = done
+	if done {
+		if item.Finished.IsZero() {
+			item.Finished = finishedAt.UTC()
+		}
+	} else {
+		item.Finished = time.Time{}
+	}
 	d.updateItemLine(item)
+	item = findByID(d, id)
+	if item == nil {
+		return nil
+	}
+	if done {
+		if item.Finished.IsZero() {
+			item.Finished = finishedAt.UTC()
+		}
+	} else {
+		item.Finished = time.Time{}
+	}
+	d.updateMeta(item)
+	return findByID(d, id)
 }
 
 func (d *Document) taskDescendants(parent *Item) []*Item {
