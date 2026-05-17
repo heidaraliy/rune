@@ -163,6 +163,78 @@ func TestMiddlePaneRendersNestedTaskDepth(t *testing.T) {
 	}
 }
 
+func TestModelCollapsesAndUnfurlsNestedItems(t *testing.T) {
+	home := t.TempDir()
+	model := nestedModel(t, home)
+
+	rendered := plainText(model.renderMiddle(60, 10))
+	if !strings.Contains(rendered, "aaa  v [ ] parent") ||
+		!strings.Contains(rendered, "  └─ bbb") {
+		t.Fatalf("expanded middle render = %q", rendered)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+	model = updated.(Model)
+	rendered = plainText(model.renderMiddle(60, 10))
+	if !model.collapsed["aaaa0000"] ||
+		!strings.Contains(rendered, "aaa  > [ ] parent") ||
+		strings.Contains(rendered, "child") ||
+		!strings.Contains(rendered, "sibling") {
+		t.Fatalf("collapsed middle render = %q collapsed=%v", rendered, model.collapsed)
+	}
+	detail := plainText(model.renderRight(60, 14))
+	if !strings.Contains(detail, "Children") || !strings.Contains(detail, "[ ] child") {
+		t.Fatalf("collapsed detail should still summarize children: %q", detail)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = updated.(Model)
+	rendered = plainText(model.renderMiddle(60, 10))
+	if model.collapsed["aaaa0000"] ||
+		!strings.Contains(rendered, "aaa  v [ ] parent") ||
+		!strings.Contains(rendered, "  └─ bbb") {
+		t.Fatalf("unfurled middle render = %q collapsed=%v", rendered, model.collapsed)
+	}
+}
+
+func TestModelPersistsCollapsedNestedItems(t *testing.T) {
+	home := t.TempDir()
+	model := nestedModel(t, home)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	if !strings.Contains(model.status, "Collapsed aaa.") {
+		t.Fatalf("collapse status = %q", model.status)
+	}
+	stateContent, err := os.ReadFile(tuiStatePath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateContent), "aaaa0000") {
+		t.Fatalf("state file did not persist collapsed item:\n%s", stateContent)
+	}
+
+	reopened := nestedModel(t, home)
+	rendered := plainText(reopened.renderMiddle(60, 10))
+	if !reopened.collapsed["aaaa0000"] ||
+		strings.Contains(rendered, "child") ||
+		!strings.Contains(rendered, "aaa  > [ ] parent") {
+		t.Fatalf("reopened collapsed render = %q collapsed=%v", rendered, reopened.collapsed)
+	}
+
+	updated, _ = reopened.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	reopened = updated.(Model)
+	if reopened.collapsed["aaaa0000"] {
+		t.Fatalf("item still collapsed after l: %v", reopened.collapsed)
+	}
+	reopenedAgain := nestedModel(t, home)
+	rendered = plainText(reopenedAgain.renderMiddle(60, 10))
+	if strings.Contains(rendered, "> [ ] parent") ||
+		!strings.Contains(rendered, "child") {
+		t.Fatalf("reopened after unfurl render = %q", rendered)
+	}
+}
+
 func TestDepthIDStyleVariesByDepth(t *testing.T) {
 	if depthIDStyle(0).GetForeground() == depthIDStyle(1).GetForeground() {
 		t.Fatal("depth 0 and depth 1 should use different id colors")
@@ -533,7 +605,7 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 			t.Fatalf("footer line %d width = %d, want %d: %q", idx, got, model.width, footer)
 		}
 	}
-	for _, want := range []string{"pg ^u/^d page", "a below", "A above", "y yank", "c codex", "t top", "x archive"} {
+	for _, want := range []string{"pg ^u/^d page", "h/l fold", "a below", "A above", "y yank", "c codex", "t top", "x archive"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer missing %q: %q", want, footer)
 		}
@@ -763,6 +835,38 @@ func TestYankCopiesTicketToTmuxBufferWhenAvailable(t *testing.T) {
 func press(model Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 	updated, cmd := model.Update(msg)
 	return updated.(Model), cmd
+}
+
+func nestedModel(t *testing.T, home string) Model {
+	t.Helper()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune"}
+	content := strings.Join([]string{
+		"# lune todo",
+		"",
+		"- [ ] parent",
+		"<!-- rune:id=aaaa0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+		"    - [ ] child",
+		"<!-- rune:id=bbbb0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+		"        - [ ] grandchild",
+		"<!-- rune:id=cccc0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+		"- [ ] sibling",
+		"<!-- rune:id=dddd0000 type=task tags= created=2026-05-14T00:00:00Z -->",
+	}, "\n")
+	path := core.ProjectPath(home, "lune")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width = 100
+	model.height = 24
+	return model
 }
 
 func plainText(value string) string {
