@@ -125,6 +125,8 @@ y yank ticket
 c open ticket in Codex
 / search
 f cycle open/all/done
+s cycle document/created/finished sort
+S reverse sort direction
 g toggle project/global
 x archive completed
 q quit

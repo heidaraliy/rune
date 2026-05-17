@@ -235,6 +235,43 @@ func TestModelPersistsCollapsedNestedItems(t *testing.T) {
 	}
 }
 
+func TestModelSortsTopLevelGroupsWithoutSplittingChildren(t *testing.T) {
+	home := t.TempDir()
+	model := sortedNestedModel(t, home)
+
+	if got := itemTitles(model.items); got != "newer parent|newer child|older parent|older child|unfinished parent" {
+		t.Fatalf("document order = %s", got)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = updated.(Model)
+	if model.sortMode != sortCreatedAt || model.sortDesc {
+		t.Fatalf("sort state = %v desc=%v, want created asc", model.sortMode, model.sortDesc)
+	}
+	if got := itemTitles(model.items); got != "older parent|older child|unfinished parent|newer parent|newer child" {
+		t.Fatalf("created sort order = %s", got)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	model = updated.(Model)
+	if got := itemTitles(model.items); got != "newer parent|newer child|unfinished parent|older parent|older child" {
+		t.Fatalf("created desc sort order = %s", got)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = updated.(Model)
+	if model.sortMode != sortFinishedAt || !model.sortDesc {
+		t.Fatalf("sort state = %v desc=%v, want finished desc", model.sortMode, model.sortDesc)
+	}
+	if got := itemTitles(model.items); got != "older parent|older child|newer parent|newer child|unfinished parent" {
+		t.Fatalf("finished desc sort order = %s", got)
+	}
+	rendered := plainText(model.renderTop())
+	if !strings.Contains(rendered, "Sort") || !strings.Contains(rendered, "finished newest") {
+		t.Fatalf("sort controls not visible in render: %q", rendered)
+	}
+}
+
 func TestDepthIDStyleVariesByDepth(t *testing.T) {
 	if depthIDStyle(0).GetForeground() == depthIDStyle(1).GetForeground() {
 		t.Fatal("depth 0 and depth 1 should use different id colors")
@@ -583,6 +620,7 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 		!strings.Contains(top, "Views") ||
 		!strings.Contains(top, "project lune") ||
 		!strings.Contains(top, "Filters") ||
+		!strings.Contains(top, "Sort") ||
 		!strings.Contains(top, "open") ||
 		!strings.Contains(top, "todo: 1") ||
 		!strings.Contains(top, "done: 1") {
@@ -605,7 +643,7 @@ func TestTopBarAndFooterExposeNewControls(t *testing.T) {
 			t.Fatalf("footer line %d width = %d, want %d: %q", idx, got, model.width, footer)
 		}
 	}
-	for _, want := range []string{"pg ^u/^d page", "h/l fold", "a below", "A above", "y yank", "c codex", "t top", "x archive"} {
+	for _, want := range []string{"pg ^u/^d page", "h/l fold", "a below", "A above", "y yank", "c codex", "s sort", "S dir", "t top", "x archive"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer missing %q: %q", want, footer)
 		}
@@ -867,6 +905,52 @@ func nestedModel(t *testing.T, home string) Model {
 	model.width = 100
 	model.height = 24
 	return model
+}
+
+func sortedNestedModel(t *testing.T, home string) Model {
+	t.Helper()
+	store := core.NewStore(home)
+	scope := core.Scope{Home: home, Project: "lune"}
+	content := strings.Join([]string{
+		"# lune todo",
+		"",
+		"- [x] newer parent",
+		"<!-- rune:id=newer000 type=task tags= created=2026-05-17T12:00:00Z finished_at=2026-05-17T13:00:00Z -->",
+		"    - [x] newer child",
+		"<!-- rune:id=newerc0 type=task tags= created=2026-05-17T12:05:00Z finished_at=2026-05-17T13:05:00Z -->",
+		"- [x] older parent",
+		"<!-- rune:id=older000 type=task tags= created=2026-05-17T10:00:00Z finished_at=2026-05-17T15:00:00Z -->",
+		"    - [x] older child",
+		"<!-- rune:id=olderc0 type=task tags= created=2026-05-17T10:05:00Z finished_at=2026-05-17T15:05:00Z -->",
+		"- [ ] unfinished parent",
+		"<!-- rune:id=open0000 type=task tags= created=2026-05-17T11:00:00Z -->",
+	}, "\n")
+	path := core.ProjectPath(home, "lune")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.width = 110
+	model.height = 24
+	model.filter = filterAll
+	if err := model.reload(); err != nil {
+		t.Fatal(err)
+	}
+	return model
+}
+
+func itemTitles(items []*core.Item) string {
+	titles := make([]string, 0, len(items))
+	for _, item := range items {
+		titles = append(titles, item.Title)
+	}
+	return strings.Join(titles, "|")
 }
 
 func plainText(value string) string {

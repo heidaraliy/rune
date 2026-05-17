@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,14 @@ const (
 	filterDone
 )
 
+type sortMode int
+
+const (
+	sortDocument sortMode = iota
+	sortCreatedAt
+	sortFinishedAt
+)
+
 type confirmAction int
 
 const (
@@ -53,6 +62,7 @@ type Model struct {
 	store     core.Store
 	scope     core.Scope
 	docs      []*core.Document
+	baseItems []*core.Item
 	allItems  []*core.Item
 	items     []*core.Item
 	selected  int
@@ -61,6 +71,8 @@ type Model struct {
 	height    int
 	mode      mode
 	filter    filterMode
+	sortMode  sortMode
+	sortDesc  bool
 	query     string
 	input     textinput.Model
 	status    string
@@ -204,6 +216,30 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.setStatus(err.Error())
 		}
 		return m.setStatus("Showing " + m.filterLabel() + " items.")
+	case "s":
+		selectedID := ""
+		if item := m.current(); item != nil {
+			selectedID = item.ID
+		}
+		m.sortMode = (m.sortMode + 1) % 3
+		m.applySortedItems()
+		if selectedID != "" {
+			m.selectItem(selectedID)
+		}
+		m.ensureSelectedVisible()
+		return m.setStatus("Sort: " + m.sortLabel() + ".")
+	case "S":
+		selectedID := ""
+		if item := m.current(); item != nil {
+			selectedID = item.ID
+		}
+		m.sortDesc = !m.sortDesc
+		m.applySortedItems()
+		if selectedID != "" {
+			m.selectItem(selectedID)
+		}
+		m.ensureSelectedVisible()
+		return m.setStatus("Sort direction: " + m.sortDirectionLabel() + ".")
 	case "/":
 		m.mode = modeSearch
 		m.input.SetValue(m.query)
@@ -477,6 +513,31 @@ func (m Model) filterLabel() string {
 	}
 }
 
+func (m Model) sortLabel() string {
+	switch m.sortMode {
+	case sortCreatedAt:
+		return "created_at " + m.sortDirectionLabel()
+	case sortFinishedAt:
+		return "finished_at " + m.sortDirectionLabel()
+	default:
+		return "document order"
+	}
+}
+
+func (m Model) sortDirectionLabel() string {
+	if m.sortDesc {
+		return "newest first"
+	}
+	return "oldest first"
+}
+
+func (m Model) sortDirectionShortLabel() string {
+	if m.sortDesc {
+		return "newest"
+	}
+	return "oldest"
+}
+
 func (m *Model) reload() error {
 	opts := core.ListOptions{Query: m.query}
 	switch m.filter {
@@ -490,8 +551,8 @@ func (m *Model) reload() error {
 		return err
 	}
 	m.docs = docs
-	m.allItems = items
-	m.applyCollapsedItems()
+	m.baseItems = items
+	m.applySortedItems()
 	if m.selected >= len(m.items) {
 		m.selected = len(m.items) - 1
 	}
@@ -502,8 +563,86 @@ func (m *Model) reload() error {
 	return nil
 }
 
+func (m *Model) applySortedItems() {
+	m.allItems = sortedTopLevelItems(m.baseItems, m.sortMode, m.sortDesc)
+	m.applyCollapsedItems()
+}
+
 func (m *Model) applyCollapsedItems() {
 	m.items = visibleItems(m.allItems, m.collapsed)
+}
+
+type itemGroup struct {
+	root  *core.Item
+	items []*core.Item
+	index int
+}
+
+func sortedTopLevelItems(items []*core.Item, mode sortMode, desc bool) []*core.Item {
+	if len(items) == 0 {
+		return nil
+	}
+	if mode == sortDocument {
+		return append([]*core.Item(nil), items...)
+	}
+	groups := topLevelItemGroups(items)
+	sort.SliceStable(groups, func(i, j int) bool {
+		left := tuiSortTime(groups[i].root, mode)
+		right := tuiSortTime(groups[j].root, mode)
+		leftZero := left.IsZero()
+		rightZero := right.IsZero()
+		if leftZero != rightZero {
+			return !leftZero
+		}
+		if left.Equal(right) {
+			return groups[i].index < groups[j].index
+		}
+		if desc {
+			return left.After(right)
+		}
+		return left.Before(right)
+	})
+	out := make([]*core.Item, 0, len(items))
+	for _, group := range groups {
+		out = append(out, group.items...)
+	}
+	return out
+}
+
+func topLevelItemGroups(items []*core.Item) []itemGroup {
+	groups := make([]itemGroup, 0, len(items))
+	for _, item := range items {
+		if len(groups) == 0 {
+			groups = append(groups, itemGroup{root: item, items: []*core.Item{item}})
+			continue
+		}
+		current := &groups[len(groups)-1]
+		if item.Doc == current.root.Doc && item.Depth > current.root.Depth {
+			current.items = append(current.items, item)
+			continue
+		}
+		groups = append(groups, itemGroup{root: item, items: []*core.Item{item}, index: len(groups)})
+	}
+	if len(groups) > 0 && groups[0].index == 0 {
+		for idx := range groups {
+			groups[idx].index = idx
+		}
+	}
+	return groups
+}
+
+func tuiSortTime(item *core.Item, mode sortMode) time.Time {
+	if item == nil {
+		return time.Time{}
+	}
+	switch mode {
+	case sortCreatedAt:
+		return item.Created
+	case sortFinishedAt:
+		return item.Finished
+	default:
+		return time.Time{}
+	}
 }
 
 func visibleItems(items []*core.Item, collapsed map[string]bool) []*core.Item {
@@ -752,8 +891,13 @@ func (m Model) renderTop() string {
 				{label: "done", active: m.filter == filterDone},
 			})
 		case 2:
+			center = m.headerControlLine("Sort", []headerChoice{
+				{label: "doc", active: m.sortMode == sortDocument},
+				{label: "created", meta: m.sortDirectionShortLabel(), active: m.sortMode == sortCreatedAt},
+				{label: "finished", meta: m.sortDirectionShortLabel(), active: m.sortMode == sortFinishedAt},
+			})
 			if m.query != "" {
-				center = topMetaStyle.Render("/ " + m.query)
+				center += topMetaStyle.Render(" / " + m.query)
 			}
 		}
 		right := stats[i] + topStyle.Render(" ")
@@ -842,6 +986,8 @@ func (m Model) renderFooter() string {
 		renderFooterRow(innerWidth, []footerHint{
 			{"/", "search"},
 			{"f", "filter"},
+			{"s", "sort"},
+			{"S", "dir"},
 			{"g", "global"},
 			{"t", "top"},
 			{"x", "archive"},
@@ -953,7 +1099,7 @@ func footerKeyStyleFor(key string) lipgloss.Style {
 		color = cosmicAmber
 	case "a", "A", "e", "y", "c", "y/enter":
 		color = cosmicGreen
-	case "g", "t", "h/l":
+	case "g", "t", "h/l", "s", "S":
 		color = cosmicViolet
 	case "x", "q", "n/esc":
 		color = lipgloss.Color("203")
