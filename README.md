@@ -115,15 +115,18 @@ Add a top-level project comment to override the ticket handoff text.
 
 ```text
 j/k move
+H/h/left collapse children
+L/l/right unfurl children
 space toggle done
-a add
+a add below
+A add above
 e edit in $EDITOR
 y yank ticket
 c open ticket in Codex
 / search
 f cycle open/all/done
 g toggle project/global
-A archive completed
+x archive completed
 q quit
 ```
 

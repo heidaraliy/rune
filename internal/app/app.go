@@ -53,6 +53,7 @@ type Model struct {
 	store     core.Store
 	scope     core.Scope
 	docs      []*core.Document
+	allItems  []*core.Item
 	items     []*core.Item
 	selected  int
 	scrollTop int
@@ -104,11 +105,15 @@ func New(store core.Store, scope core.Scope) (Model, error) {
 	in := textinput.New()
 	in.Prompt = "> "
 	in.CharLimit = 4096
+	collapsed, err := loadCollapsedState(scope.Home)
+	if err != nil {
+		return Model{}, err
+	}
 	m := Model{
 		store:     store,
 		scope:     scope,
 		input:     in,
-		collapsed: make(map[string]bool),
+		collapsed: collapsed,
 	}
 	if err := m.reload(); err != nil {
 		return Model{}, err
@@ -169,6 +174,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveSelection(m.pageSize())
 	case "pgup", "pageup", "ctrl+u":
 		m.moveSelection(-m.pageSize())
+	case "H", "h", "left":
+		return m.collapseCurrent()
+	case "L", "l", "right":
+		return m.expandCurrent()
 	case "t":
 		m.topHidden = !m.topHidden
 		m.ensureSelectedVisible()
@@ -283,6 +292,53 @@ func (m Model) toggleCurrent() (tea.Model, tea.Cmd) {
 		return m.setStatus("Toggled " + updated.DisplayID + ".")
 	}
 	return m, nil
+}
+
+func (m Model) collapseCurrent() (tea.Model, tea.Cmd) {
+	item := m.current()
+	if item == nil {
+		return m.setStatus("No item selected.")
+	}
+	if !m.hasChildren(item) {
+		return m.setStatus("No nested items.")
+	}
+	if m.collapsed == nil {
+		m.collapsed = make(map[string]bool)
+	}
+	if m.collapsed[item.ID] {
+		return m.setStatus("Already collapsed " + item.DisplayID + ".")
+	}
+	m.collapsed[item.ID] = true
+	selectedID := item.ID
+	m.applyCollapsedItems()
+	m.selectItem(selectedID)
+	m.ensureSelectedVisible()
+	if err := m.saveCollapsedState(); err != nil {
+		return m.setStatus("Collapse not saved: " + err.Error())
+	}
+	return m.setStatus("Collapsed " + item.DisplayID + ".")
+}
+
+func (m Model) expandCurrent() (tea.Model, tea.Cmd) {
+	item := m.current()
+	if item == nil {
+		return m.setStatus("No item selected.")
+	}
+	if !m.hasChildren(item) {
+		return m.setStatus("No nested items.")
+	}
+	if !m.collapsed[item.ID] {
+		return m.setStatus("Already unfurled " + item.DisplayID + ".")
+	}
+	delete(m.collapsed, item.ID)
+	selectedID := item.ID
+	m.applyCollapsedItems()
+	m.selectItem(selectedID)
+	m.ensureSelectedVisible()
+	if err := m.saveCollapsedState(); err != nil {
+		return m.setStatus("Unfurl not saved: " + err.Error())
+	}
+	return m.setStatus("Unfurled " + item.DisplayID + ".")
 }
 
 func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -434,13 +490,8 @@ func (m *Model) reload() error {
 		return err
 	}
 	m.docs = docs
-	m.items = items[:0]
-	for _, item := range items {
-		if item.Heading != "" && m.collapsed[item.Heading] {
-			continue
-		}
-		m.items = append(m.items, item)
-	}
+	m.allItems = items
+	m.applyCollapsedItems()
 	if m.selected >= len(m.items) {
 		m.selected = len(m.items) - 1
 	}
@@ -449,6 +500,34 @@ func (m *Model) reload() error {
 	}
 	m.ensureSelectedVisible()
 	return nil
+}
+
+func (m *Model) applyCollapsedItems() {
+	m.items = visibleItems(m.allItems, m.collapsed)
+}
+
+func visibleItems(items []*core.Item, collapsed map[string]bool) []*core.Item {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]*core.Item, 0, len(items))
+	var hiddenDoc *core.Document
+	hiddenDepth := -1
+	for _, item := range items {
+		if hiddenDoc != nil {
+			if item.Doc == hiddenDoc && item.Depth > hiddenDepth {
+				continue
+			}
+			hiddenDoc = nil
+			hiddenDepth = -1
+		}
+		out = append(out, item)
+		if collapsed[item.ID] && itemHasChildren(item) {
+			hiddenDoc = item.Doc
+			hiddenDepth = item.Depth
+		}
+	}
+	return out
 }
 
 func (m *Model) moveSelection(delta int) {
@@ -752,6 +831,7 @@ func (m Model) renderFooter() string {
 		renderFooterRow(innerWidth, []footerHint{
 			{"j/k", "move"},
 			{"pg ^u/^d", "page"},
+			{"h/l", "fold"},
 			{"spc", "done"},
 			{"a", "below"},
 			{"A", "above"},
@@ -873,7 +953,7 @@ func footerKeyStyleFor(key string) lipgloss.Style {
 		color = cosmicAmber
 	case "a", "A", "e", "y", "c", "y/enter":
 		color = cosmicGreen
-	case "g", "t":
+	case "g", "t", "h/l":
 		color = cosmicViolet
 	case "x", "q", "n/esc":
 		color = lipgloss.Color("203")
@@ -947,11 +1027,7 @@ func (m Model) middleRows(width int) ([]string, int) {
 	for idx, item := range m.items {
 		if item.Heading != "" && item.Heading != lastHeading {
 			lastHeading = item.Heading
-			prefix := "v "
-			if m.collapsed[item.Heading] {
-				prefix = "> "
-			}
-			lines = append(lines, headingStyle.Render(prefix+item.Heading))
+			lines = append(lines, headingStyle.Render(item.Heading))
 		}
 		if idx == m.selected {
 			selectedRow = len(lines)
@@ -968,8 +1044,15 @@ func (m Model) middleRows(width int) ([]string, int) {
 		if len(item.Tags) > 0 {
 			tags = " " + tagStyle.Render("#"+strings.Join(item.Tags, " #"))
 		}
+		caret := " "
+		if m.hasChildren(item) {
+			caret = "v"
+			if m.collapsed[item.ID] {
+				caret = ">"
+			}
+		}
 		line := itemIndent(item.Depth) + depthIDStyle(item.Depth).Render(fmt.Sprintf("%-4s", item.DisplayID)) +
-			fmt.Sprintf(" %s %s%s", box, item.Title, tags)
+			fmt.Sprintf(" %s %s %s%s", caret, box, item.Title, tags)
 		if idx == m.selected {
 			line = selectedStyle.Render(padStyled(clipStyled(line, width), width))
 		}
@@ -1061,7 +1144,10 @@ func (m Model) childrenOf(parent *core.Item) []*core.Item {
 		return nil
 	}
 	var children []*core.Item
-	for _, item := range m.items {
+	if parent.Doc == nil {
+		return nil
+	}
+	for _, item := range parent.Doc.Items {
 		if item.Line <= parent.Line {
 			continue
 		}
@@ -1071,6 +1157,26 @@ func (m Model) childrenOf(parent *core.Item) []*core.Item {
 		children = append(children, item)
 	}
 	return children
+}
+
+func (m Model) hasChildren(item *core.Item) bool {
+	return itemHasChildren(item)
+}
+
+func itemHasChildren(item *core.Item) bool {
+	if item == nil || item.Doc == nil {
+		return false
+	}
+	for _, candidate := range item.Doc.Items {
+		if candidate.Line <= item.Line {
+			continue
+		}
+		if candidate.Depth <= item.Depth {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func ruleLine(width int) string {
