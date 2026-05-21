@@ -280,7 +280,23 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 	fs.SetOutput(io.Discard)
 	global := fs.Bool("global", false, "all projects")
 	project := fs.String("project", "", "project")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true})
+	reasoning := fs.String("reasoning", "", "Codex reasoning effort")
+	minimal := fs.Bool("minimal", false, "use minimal Codex reasoning")
+	low := fs.Bool("low", false, "use low Codex reasoning")
+	medium := fs.Bool("medium", false, "use medium Codex reasoning")
+	high := fs.Bool("high", false, "use high Codex reasoning")
+	xhigh := fs.Bool("xhigh", false, "use extra-high Codex reasoning")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "reasoning": true})
+	if err != nil {
+		return err
+	}
+	codexOptions, err := codexOptionsFromFlags(*reasoning, []codexReasoningFlag{
+		{enabled: *minimal, effort: handoff.CodexReasoningMinimal},
+		{enabled: *low, effort: handoff.CodexReasoningLow},
+		{enabled: *medium, effort: handoff.CodexReasoningMedium},
+		{enabled: *high, effort: handoff.CodexReasoningHigh},
+		{enabled: *xhigh, effort: handoff.CodexReasoningXHigh},
+	})
 	if err != nil {
 		return err
 	}
@@ -288,10 +304,38 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 	if err != nil {
 		return err
 	}
-	if err := runCodex(scope.CWD, text, stdin, stdout, stderr); err != nil {
+	if err := runCodex(scope.CWD, text, codexOptions, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("codex failed: %w", err)
 	}
 	return nil
+}
+
+type codexReasoningFlag struct {
+	enabled bool
+	effort  handoff.CodexReasoningEffort
+}
+
+func codexOptionsFromFlags(reasoning string, flags []codexReasoningFlag) (handoff.CodexOptions, error) {
+	var selected []handoff.CodexReasoningEffort
+	if strings.TrimSpace(reasoning) != "" {
+		effort, err := handoff.ParseCodexReasoningEffort(reasoning)
+		if err != nil {
+			return handoff.CodexOptions{}, err
+		}
+		selected = append(selected, effort)
+	}
+	for _, flag := range flags {
+		if flag.enabled {
+			selected = append(selected, flag.effort)
+		}
+	}
+	if len(selected) > 1 {
+		return handoff.CodexOptions{}, errors.New("choose only one Codex reasoning effort")
+	}
+	if len(selected) == 0 {
+		return handoff.CodexOptions{}, nil
+	}
+	return handoff.CodexOptions{ReasoningEffort: selected[0]}, nil
 }
 
 func resolveTicket(cwd string, global bool, project string, pos []string, command string) (core.Scope, *core.Item, core.YankOptions, string, error) {
@@ -964,7 +1008,7 @@ Usage:
   rune list [--global] [--all] [--done] [--tag tag] [--sort created_at|finished_at] [--reverse]
   rune yank <id> [--print]
   rune ticket <id>
-  rune codex <id>
+  rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global

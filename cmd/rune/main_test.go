@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/heidaraliy/rune/internal/handoff"
 )
 
 func gitProjectDir(t *testing.T, name string) string {
@@ -532,9 +534,11 @@ func TestRunCodexLaunchesTicket(t *testing.T) {
 	oldRunCodex := runCodex
 	t.Cleanup(func() { runCodex = oldRunCodex })
 	var launchedCWD, launchedPrompt string
-	runCodex = func(cwd, prompt string, stdin io.Reader, stdout, stderr io.Writer) error {
+	var launchedOptions handoff.CodexOptions
+	runCodex = func(cwd, prompt string, options handoff.CodexOptions, stdin io.Reader, stdout, stderr io.Writer) error {
 		launchedCWD = cwd
 		launchedPrompt = prompt
+		launchedOptions = options
 		return nil
 	}
 
@@ -557,8 +561,76 @@ func TestRunCodexLaunchesTicket(t *testing.T) {
 	if !strings.Contains(launchedPrompt, "# Rune Ticket: launch codex") || !strings.Contains(launchedPrompt, "codex detail") {
 		t.Fatalf("codex prompt = %q", launchedPrompt)
 	}
+	if launchedOptions.ReasoningEffort != handoff.CodexReasoningDefault {
+		t.Fatalf("codex reasoning = %q, want default", launchedOptions.ReasoningEffort)
+	}
 	if stdout.Len() != 0 {
 		t.Fatalf("codex stdout = %q", stdout.String())
+	}
+}
+
+func TestRunCodexLaunchesTicketWithReasoning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRunCodex := runCodex
+	t.Cleanup(func() { runCodex = oldRunCodex })
+	var launchedOptions handoff.CodexOptions
+	runCodex = func(cwd, prompt string, options handoff.CodexOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+		launchedOptions = options
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "launch xhigh"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"codex", id, "--xhigh"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("codex code = %d, stderr=%q", code, stderr.String())
+	}
+	if launchedOptions.ReasoningEffort != handoff.CodexReasoningXHigh {
+		t.Fatalf("codex reasoning = %q, want xhigh", launchedOptions.ReasoningEffort)
+	}
+}
+
+func TestRunCodexRejectsConflictingReasoning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRunCodex := runCodex
+	t.Cleanup(func() { runCodex = oldRunCodex })
+	runCodex = func(cwd, prompt string, options handoff.CodexOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+		t.Fatal("codex should not launch")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"add", "bad reasoning"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	id := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"codex", id, "--low", "--xhigh"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code == 0 {
+		t.Fatalf("codex succeeded with conflicting reasoning")
+	}
+	if !strings.Contains(stderr.String(), "choose only one Codex reasoning effort") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
