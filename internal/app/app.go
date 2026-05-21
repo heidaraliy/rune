@@ -24,6 +24,7 @@ const (
 	modeSearch
 	modeAdd
 	modeConfirm
+	modeCodexReasoning
 )
 
 type filterMode int
@@ -151,6 +152,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAdd(msg)
 		case modeConfirm:
 			return m.updateConfirm(msg)
+		case modeCodexReasoning:
+			return m.updateCodexReasoning(msg)
 		default:
 			return m.updateNormal(msg)
 		}
@@ -283,9 +286,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		if item := m.current(); item != nil {
-			m = m.enterConfirm(confirmation{
+			m = m.enterCodexReasoning(confirmation{
 				action:        confirmCodex,
-				prompt:        "start Codex for " + item.DisplayID + "?",
+				prompt:        "Codex reasoning for " + item.DisplayID,
 				itemDisplayID: item.DisplayID,
 				codexCWD:      m.scope.CWD,
 				codexPrompt:   m.yankTicketText(item),
@@ -308,6 +311,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) enterConfirm(confirm confirmation) Model {
 	m.mode = modeConfirm
+	m.confirm = confirm
+	return m
+}
+
+func (m Model) enterCodexReasoning(confirm confirmation) Model {
+	m.mode = modeCodexReasoning
 	m.confirm = confirm
 	return m
 }
@@ -409,12 +418,58 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.setStatus("No item selected.")
 			}
 			m, _ = m.setStatus("Starting Codex for " + confirm.itemDisplayID + ".")
-			return m, launchCodex(confirm.codexCWD, confirm.codexPrompt)
+			return m, launchCodex(confirm.codexCWD, confirm.codexPrompt, handoff.CodexOptions{})
 		default:
 			return m, nil
 		}
 	}
 	return m, nil
+}
+
+func (m Model) updateCodexReasoning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n", "N", "q":
+		m = m.clearConfirm()
+		return m.setStatus(confirmCancelStatus(confirmCodex))
+	}
+	effort, ok := codexReasoningForKey(msg.String())
+	if !ok {
+		return m, nil
+	}
+	confirm := m.confirm
+	m = m.clearConfirm()
+	if strings.TrimSpace(confirm.codexPrompt) == "" {
+		return m.setStatus("No item selected.")
+	}
+	options := handoff.CodexOptions{ReasoningEffort: effort}
+	m, _ = m.setStatus(codexStartStatus(confirm.itemDisplayID, effort))
+	return m, launchCodex(confirm.codexCWD, confirm.codexPrompt, options)
+}
+
+func codexReasoningForKey(key string) (handoff.CodexReasoningEffort, bool) {
+	switch key {
+	case "d", "D":
+		return handoff.CodexReasoningDefault, true
+	case "0":
+		return handoff.CodexReasoningMinimal, true
+	case "1", "l", "L":
+		return handoff.CodexReasoningLow, true
+	case "enter", "2", "m", "M":
+		return handoff.CodexReasoningMedium, true
+	case "3", "h", "H":
+		return handoff.CodexReasoningHigh, true
+	case "4", "x", "X":
+		return handoff.CodexReasoningXHigh, true
+	default:
+		return handoff.CodexReasoningDefault, false
+	}
+}
+
+func codexStartStatus(id string, effort handoff.CodexReasoningEffort) string {
+	if effort == handoff.CodexReasoningDefault {
+		return "Starting Codex for " + id + " with default reasoning."
+	}
+	return "Starting Codex for " + id + " with " + string(effort) + " reasoning."
 }
 
 func (m Model) confirmArchive() (tea.Model, tea.Cmd) {
@@ -442,8 +497,8 @@ func confirmCancelStatus(action confirmAction) string {
 
 type codexFinishedMsg struct{ err error }
 
-func openCodex(cwd, prompt string) tea.Cmd {
-	cmd := exec.Command("codex", prompt)
+func openCodex(cwd, prompt string, options handoff.CodexOptions) tea.Cmd {
+	cmd := exec.Command("codex", handoff.CodexCommandArgs(prompt, options)...)
 	if strings.TrimSpace(cwd) != "" {
 		cmd.Dir = cwd
 	}
@@ -724,6 +779,9 @@ func (m Model) footerContentHeight() int {
 	if m.mode == modeAdd {
 		return len(m.addInputRows(boxInnerWidth(m.width)))
 	}
+	if m.mode == modeCodexReasoning {
+		return 2
+	}
 	if m.mode == modeSearch || m.mode == modeConfirm || m.status != "" {
 		return 1
 	}
@@ -982,6 +1040,20 @@ func (m Model) renderFooter() string {
 			footerKeyStyleFor("y/enter").Render("y/enter") + footerBarStyle.Render(" confirm  ") +
 			footerKeyStyleFor("n/esc").Render("n/esc") + footerBarStyle.Render(" cancel")
 		return renderFooterBox(m.width, []string{renderSolidLine(footerBarStyle, innerWidth, content)}, footerBarStyle)
+	}
+	if m.mode == modeCodexReasoning {
+		return renderFooterBox(m.width, []string{
+			renderSolidLine(footerBarStyle, innerWidth, footerBarStyle.Render(" "+m.confirm.prompt+"  ")+footerTextStyle.Render("enter medium")),
+			renderFooterRow(innerWidth, []footerHint{
+				{"0", "minimal"},
+				{"1/l", "low"},
+				{"2/m", "medium"},
+				{"3/h", "high"},
+				{"4/x", "xhigh"},
+				{"d", "default"},
+				{"esc", "cancel"},
+			}),
+		}, footerBarStyle)
 	}
 	if m.status != "" {
 		return renderFooterBox(m.width, []string{renderSolidLine(statusStyle, innerWidth, statusStyle.Render(" "+m.status))}, statusStyle)

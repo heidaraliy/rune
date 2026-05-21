@@ -13,6 +13,21 @@ const TmuxTicketBuffer = "rune-ticket"
 type ClipboardWriter func(string) error
 type TmuxBufferWriter func(string, string) error
 
+type CodexReasoningEffort string
+
+const (
+	CodexReasoningDefault CodexReasoningEffort = ""
+	CodexReasoningMinimal CodexReasoningEffort = "minimal"
+	CodexReasoningLow     CodexReasoningEffort = "low"
+	CodexReasoningMedium  CodexReasoningEffort = "medium"
+	CodexReasoningHigh    CodexReasoningEffort = "high"
+	CodexReasoningXHigh   CodexReasoningEffort = "xhigh"
+)
+
+type CodexOptions struct {
+	ReasoningEffort CodexReasoningEffort
+}
+
 type YankResult struct {
 	Copied        bool
 	TmuxAttempted bool
@@ -77,8 +92,35 @@ func LoadTmuxBuffer(name, text string) error {
 	return nil
 }
 
-func RunCodex(cwd, prompt string, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.Command("codex", prompt)
+func ParseCodexReasoningEffort(value string) (CodexReasoningEffort, error) {
+	switch CodexReasoningEffort(strings.ToLower(strings.TrimSpace(value))) {
+	case CodexReasoningDefault:
+		return CodexReasoningDefault, nil
+	case CodexReasoningMinimal:
+		return CodexReasoningMinimal, nil
+	case CodexReasoningLow:
+		return CodexReasoningLow, nil
+	case CodexReasoningMedium:
+		return CodexReasoningMedium, nil
+	case CodexReasoningHigh:
+		return CodexReasoningHigh, nil
+	case CodexReasoningXHigh:
+		return CodexReasoningXHigh, nil
+	default:
+		return CodexReasoningDefault, fmt.Errorf("unsupported Codex reasoning effort %q", value)
+	}
+}
+
+func CodexCommandArgs(prompt string, options CodexOptions) []string {
+	args := []string{}
+	if options.ReasoningEffort != CodexReasoningDefault {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", string(options.ReasoningEffort)))
+	}
+	return append(args, prompt)
+}
+
+func RunCodex(cwd, prompt string, options CodexOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.Command("codex", CodexCommandArgs(prompt, options)...)
 	if strings.TrimSpace(cwd) != "" {
 		cmd.Dir = cwd
 	}

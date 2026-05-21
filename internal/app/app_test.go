@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
 	"github.com/heidaraliy/rune/internal/core"
+	"github.com/heidaraliy/rune/internal/handoff"
 )
 
 func TestModelTogglesTaskAndCyclesDoneFilter(t *testing.T) {
@@ -462,25 +463,27 @@ func TestCodexLaunchRequiresConfirmation(t *testing.T) {
 	oldLaunchCodex := launchCodex
 	t.Cleanup(func() { launchCodex = oldLaunchCodex })
 	var launchedCWD, launchedPrompt string
+	var launchedOptions handoff.CodexOptions
 	launches := 0
-	launchCodex = func(cwd, prompt string) tea.Cmd {
+	launchCodex = func(cwd, prompt string, options handoff.CodexOptions) tea.Cmd {
 		launches++
 		launchedCWD = cwd
 		launchedPrompt = prompt
+		launchedOptions = options
 		return func() tea.Msg { return codexFinishedMsg{} }
 	}
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	model = updated.(Model)
 	if cmd != nil {
-		t.Fatal("codex key launched before confirmation")
+		t.Fatal("codex key launched before reasoning selection")
 	}
-	if model.mode != modeConfirm || model.confirm.action != confirmCodex {
-		t.Fatalf("codex mode/action = %v/%v, want confirm/codex", model.mode, model.confirm.action)
+	if model.mode != modeCodexReasoning || model.confirm.action != confirmCodex {
+		t.Fatalf("codex mode/action = %v/%v, want reasoning/codex", model.mode, model.confirm.action)
 	}
 	footer := plainText(model.renderFooter())
-	if !strings.Contains(footer, "start Codex for") || !strings.Contains(footer, "y/enter confirm") {
-		t.Fatalf("codex confirm footer = %q", model.renderFooter())
+	if !strings.Contains(footer, "Codex reasoning for") || !strings.Contains(footer, "4/x xhigh") || !strings.Contains(footer, "enter medium") {
+		t.Fatalf("codex reasoning footer = %q", model.renderFooter())
 	}
 	if launches != 0 {
 		t.Fatalf("launches before confirm = %d", launches)
@@ -498,13 +501,13 @@ func TestCodexLaunchRequiresConfirmation(t *testing.T) {
 	model.status = ""
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	model = updated.(Model)
-	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	model = updated.(Model)
 	if model.mode != modeNormal {
-		t.Fatalf("mode after confirm = %v, want normal", model.mode)
+		t.Fatalf("mode after selection = %v, want normal", model.mode)
 	}
 	if cmd == nil {
-		t.Fatal("codex confirm did not return launch command")
+		t.Fatal("codex selection did not return launch command")
 	}
 	if launches != 1 {
 		t.Fatalf("launches after confirm = %d", launches)
@@ -514,6 +517,9 @@ func TestCodexLaunchRequiresConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(launchedPrompt, "# Rune Ticket: codex task") || !strings.Contains(launchedPrompt, "launch detail") {
 		t.Fatalf("codex prompt = %q", launchedPrompt)
+	}
+	if launchedOptions.ReasoningEffort != handoff.CodexReasoningXHigh {
+		t.Fatalf("codex reasoning = %q, want xhigh", launchedOptions.ReasoningEffort)
 	}
 	if _, err := store.SetDone(scope, item.ID, true, false, false); err != nil {
 		t.Fatal(err)

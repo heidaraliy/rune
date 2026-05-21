@@ -70,3 +70,24 @@ func TestYankTicketReturnsClipboardFailure(t *testing.T) {
 		t.Fatalf("YankTicket error = %v", err)
 	}
 }
+
+func TestCodexCommandArgsIncludesReasoningOverride(t *testing.T) {
+	args := CodexCommandArgs("ticket prompt", CodexOptions{ReasoningEffort: CodexReasoningXHigh})
+	want := []string{"-c", `model_reasoning_effort="xhigh"`, "ticket prompt"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("CodexCommandArgs = %#v, want %#v", args, want)
+	}
+}
+
+func TestParseCodexReasoningEffort(t *testing.T) {
+	effort, err := ParseCodexReasoningEffort("HIGH")
+	if err != nil {
+		t.Fatalf("ParseCodexReasoningEffort error = %v", err)
+	}
+	if effort != CodexReasoningHigh {
+		t.Fatalf("effort = %q, want high", effort)
+	}
+	if _, err := ParseCodexReasoningEffort("huge"); err == nil {
+		t.Fatal("ParseCodexReasoningEffort accepted unsupported value")
+	}
+}

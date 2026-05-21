@@ -74,7 +74,7 @@ rune list [--global] [--all] [--done] [--tag t] [--project p] [--sort created_at
 rune show <id> [--raw]
 rune yank <id> [--print]
 rune ticket <id>
-rune codex <id>
+rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
 rune edit <id> --end "..." | --replace "..." | --title "..." | --stdin
 rune done <id>
 rune undone <id>
@@ -102,7 +102,8 @@ Project files use their project agent by default, such as `$lune-agent` for
 `rune-ticket` tmux buffer, so prefix + paste can send it into another pane
 without relying on a remote device clipboard. Use `rune ticket <id>` or
 `rune yank <id> --print` to write the ticket to stdout, and `rune codex <id>` to
-start Codex directly with that ticket as the prompt.
+start Codex directly with that ticket as the prompt. Add a reasoning flag such
+as `--low`, `--xhigh`, or `--reasoning xhigh` for one-off Codex launches.
 
 Add a top-level project comment to override the ticket handoff text.
 
@@ -122,7 +123,7 @@ a add below
 A add above
 e edit in $EDITOR
 y yank ticket
-c open ticket in Codex
+c open ticket in Codex, then pick reasoning
 / search
 f cycle open/all/done
 s cycle document/created/finished sort
