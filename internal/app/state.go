@@ -13,6 +13,9 @@ type tuiState struct {
 }
 
 func tuiStatePath(home string) string {
+	if filepath.Base(home) == ".rune" {
+		return filepath.Join(home, "tui-state.json")
+	}
 	return filepath.Join(home, ".rune", "tui-state.json")
 }
 

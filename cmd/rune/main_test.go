@@ -231,6 +231,96 @@ func TestRunAddProjectFlagOutsideGitWritesProjectFile(t *testing.T) {
 	}
 }
 
+func TestRunInitAndAddUsesProjectLocalFileStore(t *testing.T) {
+	cwd := gitProjectDir(t, "lune")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init", "--project", "Lune"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("init code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), filepath.Join(cwd, ".rune")) ||
+		!strings.Contains(stdout.String(), "project lune") {
+		t.Fatalf("init stdout = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"add", "project local note", "--body", "detail"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("add code = %d, stderr=%q", code, stderr.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(cwd, ".rune", "projects", "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].IsDir() || !strings.Contains(entries[0].Name(), "project-local-note") {
+		t.Fatalf("local project entries = %#v", entries)
+	}
+	content, err := os.ReadFile(filepath.Join(cwd, ".rune", "projects", "lune", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); !strings.Contains(got, "- [ ] project local note") || !strings.Contains(got, "  detail") {
+		t.Fatalf("local note content:\n%s", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"path", "--store"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("path --store code = %d, stderr=%q", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != filepath.Join(cwd, ".rune") {
+		t.Fatalf("path --store = %q, want local .rune", got)
+	}
+}
+
+func TestRunMigrateSplitsSourceIntoProjectLocalStore(t *testing.T) {
+	cwd := gitProjectDir(t, "lune")
+	source := filepath.Join(t.TempDir(), "lune.md")
+	legacy := strings.Join([]string{
+		"# lune",
+		"",
+		"- [ ] first migrated",
+		"  body one",
+		"- [ ] second migrated",
+		"<!-- rune:id=second00 type=task tags= created=2026-05-14T00:00:00Z -->",
+	}, "\n") + "\n"
+	if err := os.WriteFile(source, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"migrate", source, "--project", "lune"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("migrate code = %d, stderr=%q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"Migrated 2 item(s) into 2 file(s) for project lune",
+		"Source left unchanged: " + source,
+		"Assigned 1 missing id(s)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("migrate stdout missing %q:\n%s", want, got)
+		}
+	}
+	if after, err := os.ReadFile(source); err != nil || string(after) != legacy {
+		t.Fatalf("source changed or unreadable err=%v:\n%s", err, string(after))
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"list", "--all"}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("list code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "first migrated") || !strings.Contains(stdout.String(), "second migrated") {
+		t.Fatalf("list stdout = %q", stdout.String())
+	}
+}
+
 func TestRunAddRequiresProjectOutsideGit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

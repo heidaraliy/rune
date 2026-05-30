@@ -11,11 +11,20 @@ const (
 	ItemNote = "note"
 )
 
+type StoreLayout string
+
+const (
+	StoreLayoutMarkdown StoreLayout = ""
+	StoreLayoutFiles    StoreLayout = "files"
+)
+
 type Scope struct {
-	Home    string
-	CWD     string
-	Project string
-	Global  bool
+	Home        string
+	CWD         string
+	Project     string
+	Global      bool
+	Layout      StoreLayout
+	ProjectRoot string
 }
 
 type Document struct {

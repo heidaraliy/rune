@@ -90,6 +90,32 @@ func TestModelSearchAndView(t *testing.T) {
 	}
 }
 
+func TestModelRendersProjectLocalFileStoreItems(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".rune")
+	store := core.NewStore(home)
+	store.Layout = core.StoreLayoutFiles
+	scope := core.Scope{Home: home, Project: "lune", Layout: core.StoreLayoutFiles}
+	if _, err := store.Add(scope, core.AddOptions{Title: "local file note", Body: "file-backed detail"}); err != nil {
+		t.Fatal(err)
+	}
+	model, err := New(store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	model = updated.(Model)
+	view := plainText(model.View())
+	if !strings.Contains(view, "local file note") || !strings.Contains(view, "file-backed detail") {
+		t.Fatalf("view = %q", view)
+	}
+	detail := plainText(model.renderRight(48, 16))
+	if !strings.Contains(detail, "Source") ||
+		!strings.Contains(detail, "projects/lune/") ||
+		!strings.Contains(detail, ".md:") {
+		t.Fatalf("detail source = %q", detail)
+	}
+}
+
 func TestViewRowsDoNotExceedTerminalWidth(t *testing.T) {
 	home := t.TempDir()
 	store := core.NewStore(home)

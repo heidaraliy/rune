@@ -58,6 +58,33 @@ Set `RUNE_HOME` to use another store.
 RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
 
+For notes that should travel with a repository, initialize a project-local
+store:
+
+```sh
+rune init --project lune
+```
+
+That creates `.rune/config.json` and stores each top-level note as its own
+Markdown file:
+
+```text
+.rune/
+  config.json
+  projects/<project>/<order-id-title>.md
+  archive/<project>/YYYY-WW/<id-title>.md
+```
+
+Inside that repo, Rune automatically uses `.rune` unless `RUNE_HOME` is set.
+To migrate an existing monolithic project file, run:
+
+```sh
+rune migrate ~/notes/projects/lune.md --project lune
+```
+
+Migration copies and splits the source file, assigns missing IDs when needed,
+and leaves the original Markdown file unchanged.
+
 ## IDs
 
 Rune stores 8-character internal IDs, but displays the shortest unique prefix
@@ -86,6 +113,8 @@ rune projects
 rune tags
 rune archive --done [--project p]
 rune import <file> --project lune
+rune init [--project lune]
+rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
 ```
