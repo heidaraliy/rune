@@ -390,6 +390,227 @@ func TestAddCreatesProjectFileWithoutInboxHeading(t *testing.T) {
 	}
 }
 
+func TestResolveScopeUsesProjectLocalRuneStore(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwd, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config, home, err := InitLocalStore(cwd, "Lune")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Project != "lune" {
+		t.Fatalf("project = %q, want lune", config.Project)
+	}
+
+	scope, err := ResolveScope(cwd, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Home != home || scope.Layout != StoreLayoutFiles || scope.Project != "lune" {
+		t.Fatalf("scope = %#v, home=%q", scope, home)
+	}
+
+	override := t.TempDir()
+	t.Setenv("RUNE_HOME", override)
+	scope, err = ResolveScope(cwd, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Home != override || scope.Layout == StoreLayoutFiles {
+		t.Fatalf("RUNE_HOME override scope = %#v, want home %q without local layout", scope, override)
+	}
+}
+
+func TestFileLayoutAddEditDoneUsesIsolatedProjectFiles(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	store.Layout = StoreLayoutFiles
+	store.Now = func() time.Time { return time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC) }
+	scope := Scope{Home: home, Project: "lune", Layout: StoreLayoutFiles}
+
+	item, err := store.Add(scope, AddOptions{
+		Title: "split storage",
+		Body: strings.Join([]string{
+			"implementation note",
+			"",
+			"- [ ] nested task",
+		}, "\n"),
+		Tags: []string{"storage"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(ProjectDir(home, "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].IsDir() ||
+		!strings.Contains(entries[0].Name(), item.ID+"-split-storage") {
+		t.Fatalf("project entries = %#v, item=%s", entries, item.ID)
+	}
+	notePath := filepath.Join(ProjectDir(home, "lune"), entries[0].Name())
+	content, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); !strings.Contains(got, "# lune\n\n- [ ] split storage\n") ||
+		!strings.Contains(got, "  implementation note") ||
+		!strings.Contains(got, "  - [ ] nested task") {
+		t.Fatalf("note content:\n%s", got)
+	}
+
+	items, _, err := store.Items(scope, ListOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want parent plus nested task: %#v", len(items), items)
+	}
+	if _, err := store.Edit(scope, item.ID, EditOptions{Append: "follow-up"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetDone(scope, item.ID, true, false, false); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); !strings.Contains(got, "- [x] split storage") ||
+		!strings.Contains(got, "finished_at=2026-05-18T09:00:00Z") ||
+		!strings.Contains(got, "follow-up") {
+		t.Fatalf("updated note content:\n%s", got)
+	}
+}
+
+func TestImportFilesSplitsTopLevelItemsAndLeavesSourceUnchanged(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	store.Layout = StoreLayoutFiles
+	store.Now = func() time.Time { return time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC) }
+	source := filepath.Join(t.TempDir(), "lune.md")
+	original := strings.Join([]string{
+		"# lune",
+		"",
+		"<!-- rune-ticket-agent: $lune-agent -->",
+		"",
+		"- [ ] first ticket",
+		"  first body",
+		"    - [ ] child task",
+		"- [ ] second ticket",
+		"<!-- rune:id=second00 type=task tags=agent created=2026-05-14T00:00:00Z -->",
+		"  second body",
+	}, "\n") + "\n"
+	if err := os.WriteFile(source, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := store.ImportFiles(source, "lune", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Files != 2 || report.Items != 3 || report.AssignedIDs != 2 {
+		t.Fatalf("report = %#v, want 2 files, 3 items, 2 assigned ids", report)
+	}
+	entries, err := os.ReadDir(ProjectDir(home, "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2: %#v", len(entries), entries)
+	}
+	items, _, err := store.Items(Scope{Home: home, Project: "lune", Layout: StoreLayoutFiles}, ListOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(items); got != "first ticket|child task|second ticket" {
+		t.Fatalf("items = %s", got)
+	}
+	var firstFile string
+	for _, entry := range entries {
+		content, err := os.ReadFile(filepath.Join(ProjectDir(home, "lune"), entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "first ticket") {
+			firstFile = string(content)
+			break
+		}
+	}
+	if firstFile == "" ||
+		!strings.Contains(firstFile, "<!-- rune-ticket-agent: $lune-agent -->") ||
+		!strings.Contains(firstFile, "first body") ||
+		!strings.Contains(firstFile, "child task") {
+		t.Fatalf("first split file:\n%s", firstFile)
+	}
+	sourceAfter, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sourceAfter) != original {
+		t.Fatalf("source was changed:\n%s", string(sourceAfter))
+	}
+}
+
+func TestFileLayoutArchiveAndRestoreMovesNoteFiles(t *testing.T) {
+	home := t.TempDir()
+	store := NewStore(home)
+	store.Layout = StoreLayoutFiles
+	store.Now = func() time.Time { return time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC) }
+	scope := Scope{Home: home, Project: "lune", Layout: StoreLayoutFiles}
+	done, err := store.Add(scope, AddOptions{Title: "done isolated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add(scope, AddOptions{Title: "still open"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetDone(scope, done.ID, true, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	count, archiveDir, err := store.ArchiveDone(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("archive count = %d, want 1", count)
+	}
+	if archiveDir != ArchiveDir(home, "lune", store.Now()) {
+		t.Fatalf("archive dir = %q, want %q", archiveDir, ArchiveDir(home, "lune", store.Now()))
+	}
+	projectEntries, err := os.ReadDir(ProjectDir(home, "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectEntries) != 1 || !strings.Contains(projectEntries[0].Name(), "still-open") {
+		t.Fatalf("project entries after archive = %#v", projectEntries)
+	}
+	archiveEntries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archiveEntries) != 1 || !strings.Contains(archiveEntries[0].Name(), "done-isolated") {
+		t.Fatalf("archive entries = %#v", archiveEntries)
+	}
+
+	restored, paths, err := store.RestoreArchivedProject(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != 1 || len(paths) != 1 {
+		t.Fatalf("restore = %d/%#v, want 1/1", restored, paths)
+	}
+	projectEntries, err = os.ReadDir(ProjectDir(home, "lune"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectEntries) != 2 {
+		t.Fatalf("project entries after restore = %#v, want 2", projectEntries)
+	}
+}
+
 func TestResolvePrefixAllowsShortestUniqueAndReportsAmbiguity(t *testing.T) {
 	items := []*Item{
 		{ID: "1hc9fq2a", Title: "networking idea"},

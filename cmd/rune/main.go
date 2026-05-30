@@ -94,6 +94,10 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) i
 		err = runRestore(rest, stdout, cwd)
 	case "import":
 		err = runImport(rest, stdout, cwd)
+	case "init":
+		err = runInit(rest, stdout, cwd)
+	case "migrate":
+		err = runMigrate(rest, stdout, cwd)
 	case "path":
 		err = runPath(rest, stdout, cwd)
 	case "doctor":
@@ -114,7 +118,7 @@ func runTUI(stdout, stderr io.Writer, cwd string, global bool, project string) i
 		fmt.Fprintf(stderr, "rune: %v\n", err)
 		return 1
 	}
-	model, err := app.New(core.NewStore(scope.Home), scope)
+	model, err := app.New(core.NewStoreForScope(scope), scope)
 	if err != nil {
 		fmt.Fprintf(stderr, "rune: %v\n", err)
 		return 1
@@ -593,7 +597,11 @@ func runRestore(args []string, stdout io.Writer, cwd string) error {
 		fmt.Fprintln(stdout, "No archived project items to restore.")
 		return nil
 	}
-	fmt.Fprintf(stdout, "Restored %d item(s) into %s\n", count, core.ProjectPath(scope.Home, scope.Project))
+	target := core.ProjectPath(scope.Home, scope.Project)
+	if scope.Layout == core.StoreLayoutFiles {
+		target = core.ProjectDir(scope.Home, scope.Project)
+	}
+	fmt.Fprintf(stdout, "Restored %d item(s) into %s\n", count, target)
 	for _, path := range paths {
 		fmt.Fprintf(stdout, "Updated archive: %s\n", path)
 	}
@@ -624,6 +632,54 @@ func runImport(args []string, stdout io.Writer, cwd string) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "Imported %d item id(s) into %s\n", count, path)
+	return nil
+}
+
+func runInit(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	config, home, err := core.InitLocalStore(cwd, *project)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Initialized %s for project %s\n", home, config.Project)
+	return nil
+}
+
+func runMigrate(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune migrate", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	source := fs.String("source", "", "source markdown file")
+	force := fs.Bool("force", false, "merge into existing note files")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "source": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return errors.New("migrate accepts at most one source file")
+	}
+	if len(pos) == 1 {
+		*source = pos[0]
+	}
+	report, config, err := core.MigrateProjectToLocal(cwd, *project, *source, *force, nil)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Migrated %d item(s) into %d file(s) for project %s\n", report.Items, report.Files, config.Project)
+	fmt.Fprintf(stdout, "Source left unchanged: %s\n", report.Source)
+	fmt.Fprintf(stdout, "Target: %s\n", report.Target)
+	if report.AssignedIDs > 0 {
+		fmt.Fprintf(stdout, "Assigned %d missing id(s)\n", report.AssignedIDs)
+	}
 	return nil
 }
 
@@ -662,6 +718,8 @@ func runPath(args []string, stdout io.Writer, cwd string) error {
 	}
 	if len(docs) > 0 {
 		fmt.Fprintln(stdout, docs[0].Path)
+	} else if scope.Layout == core.StoreLayoutFiles && scope.Project != "" {
+		fmt.Fprintln(stdout, core.ProjectDir(scope.Home, scope.Project))
 	}
 	return nil
 }
@@ -698,7 +756,7 @@ func scopedStore(cwd string, global bool, project string) (core.Scope, core.Stor
 	if err != nil {
 		return core.Scope{}, core.Store{}, err
 	}
-	store := core.NewStore(scope.Home)
+	store := core.NewStoreForScope(scope)
 	return scope, store, nil
 }
 
@@ -1012,10 +1070,12 @@ Usage:
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global
+  rune init [--project p]
+  rune migrate [file] [--project p] [--force]
 
 Commands:
   add, list, show, yank, ticket, codex, edit, done, undone, toggle, tag, untag, find
-  projects, tags, archive, restore, import, path, doctor`)
+  projects, tags, archive, restore, import, init, migrate, path, doctor`)
 }
 
 func displayVersion() string {

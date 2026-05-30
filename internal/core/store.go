@@ -12,12 +12,19 @@ import (
 )
 
 type Store struct {
-	Home string
-	Now  func() time.Time
+	Home   string
+	Layout StoreLayout
+	Now    func() time.Time
 }
 
 func NewStore(home string) Store {
 	return Store{Home: home, Now: func() time.Time { return time.Now().UTC() }}
+}
+
+func NewStoreForScope(scope Scope) Store {
+	store := NewStore(scope.Home)
+	store.Layout = scope.Layout
+	return store
 }
 
 func (s Store) now() time.Time {
@@ -27,30 +34,58 @@ func (s Store) now() time.Time {
 	return time.Now().UTC()
 }
 
+func (s Store) storeLayout(scope Scope) StoreLayout {
+	if scope.Layout != "" {
+		return scope.Layout
+	}
+	return s.Layout
+}
+
+func (s Store) withScope(scope Scope) Store {
+	if scope.Home != "" {
+		s.Home = scope.Home
+	}
+	s.Layout = s.storeLayout(scope)
+	return s
+}
+
 func (s Store) LoadScope(scope Scope) ([]*Document, error) {
-	if err := EnsureStore(scope.Home); err != nil {
+	scoped := s.withScope(scope)
+	layout := scoped.Layout
+	if err := EnsureStoreLayout(scoped.Home, layout); err != nil {
 		return nil, err
 	}
 	var docs []*Document
 	switch {
 	case scope.Global:
-		return s.LoadAll()
+		return scoped.LoadAll()
 	case scope.Project == "":
 		return nil, errors.New("project context required; run from a git project or pass --project")
 	default:
-		doc, err := s.LoadPath(ProjectPath(scope.Home, scope.Project), "project", scope.Project, scope.Project)
-		if err != nil {
-			return nil, err
+		if layout == StoreLayoutFiles {
+			var err error
+			docs, err = scoped.loadProjectDir(scope.Project)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			doc, err := scoped.LoadPath(ProjectPath(scoped.Home, scope.Project), "project", scope.Project, scope.Project)
+			if err != nil {
+				return nil, err
+			}
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
 	s.applyDisplay(docs)
 	return docs, nil
 }
 
 func (s Store) LoadAll() ([]*Document, error) {
-	if err := EnsureStore(s.Home); err != nil {
+	if err := EnsureStoreLayout(s.Home, s.Layout); err != nil {
 		return nil, err
+	}
+	if s.Layout == StoreLayoutFiles {
+		return s.loadAllFileDocs()
 	}
 	var docs []*Document
 	for _, root := range []struct {
@@ -81,6 +116,115 @@ func (s Store) LoadAll() ([]*Document, error) {
 	}
 	s.applyDisplay(docs)
 	return docs, nil
+}
+
+func (s Store) loadProjectDir(project string) ([]*Document, error) {
+	project = cleanKey(project)
+	if project == "" {
+		return nil, nil
+	}
+	dir := ProjectDir(s.Home, project)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var docs []*Document
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		doc, err := s.LoadPath(filepath.Join(dir, entry.Name()), "project", project, project)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+	sortProjectDocs(docs)
+	return docs, nil
+}
+
+func (s Store) loadAllFileDocs() ([]*Document, error) {
+	var docs []*Document
+	projectRoot := filepath.Join(s.Home, "projects")
+	projectEntries, err := os.ReadDir(projectRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range projectEntries {
+		if !entry.IsDir() {
+			if strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+				key := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+				doc, err := s.LoadPath(filepath.Join(projectRoot, entry.Name()), "project", key, key)
+				if err != nil {
+					return nil, err
+				}
+				docs = append(docs, doc)
+			}
+			continue
+		}
+		projectDocs, err := s.loadProjectDir(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, projectDocs...)
+	}
+	archiveRoot := filepath.Join(s.Home, "archive")
+	projectArchives, err := os.ReadDir(archiveRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, projectEntry := range projectArchives {
+		if !projectEntry.IsDir() {
+			if strings.HasSuffix(strings.ToLower(projectEntry.Name()), ".md") {
+				key := strings.TrimSuffix(projectEntry.Name(), filepath.Ext(projectEntry.Name()))
+				doc, err := s.LoadPath(filepath.Join(archiveRoot, projectEntry.Name()), "archive", key, key)
+				if err != nil {
+					return nil, err
+				}
+				docs = append(docs, doc)
+			}
+			continue
+		}
+		project := cleanKey(projectEntry.Name())
+		weekRoot := filepath.Join(archiveRoot, projectEntry.Name())
+		weeks, err := os.ReadDir(weekRoot)
+		if err != nil {
+			return nil, err
+		}
+		sort.Slice(weeks, func(i, j int) bool { return weeks[i].Name() < weeks[j].Name() })
+		for _, week := range weeks {
+			if !week.IsDir() {
+				continue
+			}
+			files, err := os.ReadDir(filepath.Join(weekRoot, week.Name()))
+			if err != nil {
+				return nil, err
+			}
+			sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+			for _, file := range files {
+				if file.IsDir() || !strings.HasSuffix(strings.ToLower(file.Name()), ".md") {
+					continue
+				}
+				doc, err := s.LoadPath(filepath.Join(weekRoot, week.Name(), file.Name()), "archive", project, project)
+				if err != nil {
+					return nil, err
+				}
+				docs = append(docs, doc)
+			}
+		}
+	}
+	s.applyDisplay(docs)
+	return docs, nil
+}
+
+func sortProjectDocs(docs []*Document) {
+	sort.SliceStable(docs, func(i, j int) bool {
+		return docs[i].Path < docs[j].Path
+	})
 }
 
 func (s Store) LoadPath(path, kind, key, title string) (*Document, error) {
@@ -148,6 +292,9 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 	if opts.Title = strings.TrimSpace(opts.Title); opts.Title == "" {
 		return nil, errors.New("title is required")
 	}
+	if s.storeLayout(scope) == StoreLayoutFiles {
+		return s.addFileItem(scope, opts)
+	}
 	docs, err := s.LoadScope(scope)
 	if err != nil {
 		return nil, err
@@ -156,7 +303,7 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 		return nil, errors.New("no document loaded")
 	}
 	doc := docs[0]
-	allDocs, err := s.LoadAll()
+	allDocs, err := s.withScope(scope).LoadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +347,63 @@ func (s Store) Add(scope Scope, opts AddOptions) (*Item, error) {
 	return inserted, nil
 }
 
+func (s Store) addFileItem(scope Scope, opts AddOptions) (*Item, error) {
+	if scope.Project == "" {
+		return nil, errors.New("project context required; run from a git project or pass --project")
+	}
+	allDocs, err := s.withScope(scope).LoadAll()
+	if err != nil {
+		return nil, err
+	}
+	existing := existingIDs(allDocs)
+	id, err := NewID(existing)
+	if err != nil {
+		return nil, err
+	}
+	created := opts.Created.UTC()
+	if created.IsZero() {
+		created = s.now()
+	}
+	itemType := ItemTask
+	if opts.AsNote {
+		itemType = ItemNote
+	}
+	item := &Item{
+		ID:      id,
+		Type:    itemType,
+		Title:   opts.Title,
+		Tags:    normalizeTags(opts.Tags),
+		Created: created,
+		Project: scope.Project,
+	}
+	path := ProjectItemPathWithPrefix(scope.Home, scope.Project, createdFilePrefix(created), id, opts.Title)
+	doc := NewDocument(path, "project", scope.Project, scope.Project)
+	doc.appendItem(item, opts.Body)
+	inserted := findByID(doc, id)
+	if inserted == nil {
+		return nil, errors.New("inserted item could not be found")
+	}
+	existing[id] = true
+	if err := s.assignMissingIDs(doc, doc.subtreeItems(inserted), existing); err != nil {
+		return nil, err
+	}
+	inserted = findByID(doc, id)
+	if err := s.Save(doc); err != nil {
+		return nil, err
+	}
+	docs, err := s.withScope(scope).LoadScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	s.applyDisplay(docs)
+	for _, loaded := range docs {
+		if found := findByID(loaded, id); found != nil {
+			return found, nil
+		}
+	}
+	return inserted, nil
+}
+
 func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions, global bool) (*Item, error) {
 	if strings.TrimSpace(anchorID) == "" {
 		return s.Add(scope, opts)
@@ -211,7 +415,7 @@ func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions
 	if err != nil {
 		return nil, err
 	}
-	allDocs, err := s.LoadAll()
+	allDocs, err := s.withScope(scope).LoadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +456,13 @@ func (s Store) AddNear(scope Scope, anchorID string, above bool, opts AddOptions
 	ApplyDisplayIDs(anchor.Doc.Items)
 	if err := s.Save(anchor.Doc); err != nil {
 		return nil, err
+	}
+	if docs, err := s.withScope(scope).LoadScope(scope); err == nil {
+		for _, doc := range docs {
+			if found := findByID(doc, id); found != nil {
+				return found, nil
+			}
+		}
 	}
 	return inserted, nil
 }
@@ -472,7 +683,7 @@ func (s Store) Edit(scope Scope, prefix string, opts EditOptions, global bool) (
 		item = findByID(doc, item.ID)
 	}
 	if changedBody {
-		allDocs, err := s.LoadAll()
+		allDocs, err := s.withScope(scope).LoadAll()
 		if err != nil {
 			return nil, err
 		}
@@ -525,6 +736,9 @@ func (s Store) ArchiveDone(scope Scope) (int, string, error) {
 	if scope.Project == "" {
 		return 0, "", errors.New("archive requires a project context or --project")
 	}
+	if s.storeLayout(scope) == StoreLayoutFiles {
+		return s.archiveDoneFiles(scope)
+	}
 	doc, err := s.LoadPath(ProjectPath(scope.Home, scope.Project), "project", scope.Project, scope.Project)
 	if err != nil {
 		return 0, "", err
@@ -571,9 +785,69 @@ func (s Store) ArchiveDone(scope Scope) (int, string, error) {
 	return len(done), archive.Path, nil
 }
 
+func (s Store) archiveDoneFiles(scope Scope) (int, string, error) {
+	docs, err := s.withScope(scope).loadProjectDir(scope.Project)
+	if err != nil {
+		return 0, "", err
+	}
+	total := 0
+	archiveDir := ArchiveDir(scope.Home, scope.Project, s.now())
+	for _, doc := range docs {
+		var done []*Item
+		for _, item := range doc.Items {
+			if item.IsDone() {
+				done = append(done, item)
+			}
+		}
+		if len(done) == 0 {
+			continue
+		}
+		var roots []*Item
+		for _, item := range done {
+			if !itemHasDoneTaskAncestor(item) {
+				roots = append(roots, item)
+			}
+		}
+		if len(roots) == 0 {
+			continue
+		}
+		blocks := doc.removeSubtrees(roots)
+		for idx, root := range roots {
+			block := blocks[idx]
+			path := ArchiveItemPath(scope.Home, scope.Project, root.ID, root.Title, s.now())
+			if err := s.writeItemDocument(path, "archive", scope.Project, block); err != nil {
+				return total, archiveDir, err
+			}
+		}
+		total += len(done)
+		if len(doc.Items) == 0 {
+			if err := os.Remove(doc.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return total, archiveDir, err
+			}
+			continue
+		}
+		if err := s.Save(doc); err != nil {
+			return total, archiveDir, err
+		}
+	}
+	return total, archiveDir, nil
+}
+
+func (s Store) writeItemDocument(path, kind, project string, block []string) error {
+	doc := NewDocument(path, kind, project, project)
+	doc.Lines = []string{"# " + project, ""}
+	doc.Lines = append(doc.Lines, trimBlankLines(block)...)
+	doc.changed = true
+	parseItems(doc)
+	return s.Save(doc)
+}
+
 func (s Store) RestoreArchivedProject(scope Scope) (int, []string, error) {
 	if scope.Project == "" {
 		return 0, nil, errors.New("restore requires a project context or --project")
+	}
+	if s.storeLayout(scope) == StoreLayoutFiles {
+		return s.restoreArchivedProjectFiles(scope)
 	}
 	project := cleanKey(scope.Project)
 	target, err := s.LoadPath(ProjectPath(scope.Home, project), "project", project, project)
@@ -637,6 +911,57 @@ func (s Store) RestoreArchivedProject(scope Scope) (int, []string, error) {
 	for _, archive := range changedArchives {
 		if err := s.Save(archive); err != nil {
 			return total, touched, err
+		}
+	}
+	return total, touched, nil
+}
+
+func (s Store) restoreArchivedProjectFiles(scope Scope) (int, []string, error) {
+	project := cleanKey(scope.Project)
+	root := filepath.Join(scope.Home, "archive", project)
+	weeks, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil, nil
+		}
+		return 0, nil, err
+	}
+	sort.Slice(weeks, func(i, j int) bool { return weeks[i].Name() < weeks[j].Name() })
+	total := 0
+	var touched []string
+	for _, week := range weeks {
+		if !week.IsDir() {
+			continue
+		}
+		weekDir := filepath.Join(root, week.Name())
+		files, err := os.ReadDir(weekDir)
+		if err != nil {
+			return total, touched, err
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(strings.ToLower(file.Name()), ".md") {
+				continue
+			}
+			source := filepath.Join(weekDir, file.Name())
+			doc, err := s.LoadPath(source, "archive", project, project)
+			if err != nil {
+				return total, touched, err
+			}
+			count := len(doc.Items)
+			if count == 0 {
+				continue
+			}
+			target := filepath.Join(ProjectDir(scope.Home, project), file.Name())
+			target = uniquePath(target)
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return total, touched, err
+			}
+			if err := os.Rename(source, target); err != nil {
+				return total, touched, err
+			}
+			total += count
+			touched = append(touched, source)
 		}
 	}
 	return total, touched, nil
@@ -720,6 +1045,10 @@ func (s Store) Import(path, project string) (int, string, error) {
 	if project == "" {
 		return 0, "", errors.New("--project is required")
 	}
+	if s.Layout == StoreLayoutFiles {
+		report, err := s.ImportFiles(path, project, false)
+		return report.AssignedIDs, report.Target, err
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return 0, "", err
@@ -756,6 +1085,136 @@ func (s Store) Import(path, project string) (int, string, error) {
 	target.changed = true
 	parseItems(target)
 	return count, target.Path, s.Save(target)
+}
+
+type FileImportReport struct {
+	Source      string
+	Target      string
+	Files       int
+	Items       int
+	AssignedIDs int
+}
+
+func (s Store) ImportFiles(path, project string, force bool) (FileImportReport, error) {
+	project = cleanKey(project)
+	if project == "" {
+		return FileImportReport{}, errors.New("--project is required")
+	}
+	report := FileImportReport{Source: path, Target: ProjectDir(s.Home, project)}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return report, err
+	}
+	if err := EnsureStoreLayout(s.Home, StoreLayoutFiles); err != nil {
+		return report, err
+	}
+	if !force {
+		entries, err := os.ReadDir(report.Target)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return report, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+				return report, fmt.Errorf("%s already contains note files; use --force to merge", report.Target)
+			}
+		}
+	}
+	imported, err := ParseDocument(path, "import", project, content)
+	if err != nil {
+		return report, err
+	}
+	allDocs, err := s.LoadAll()
+	if err != nil {
+		return report, err
+	}
+	existing := existingIDs(allDocs)
+	for i := len(imported.Items) - 1; i >= 0; i-- {
+		item := imported.Items[i]
+		if item.ID != "" {
+			continue
+		}
+		id, err := NewID(existing)
+		if err != nil {
+			return report, err
+		}
+		item.ID = id
+		item.Created = s.now()
+		imported.updateMeta(item)
+		report.AssignedIDs++
+	}
+	roots := topLevelItems(imported.Items)
+	if len(roots) == 0 {
+		return report, nil
+	}
+	preamble := ticketPreambleLines(imported.Lines, roots[0].Line)
+	for idx, root := range roots {
+		block := imported.rawSubtree(root)
+		lines := []string{"# " + project, ""}
+		if len(preamble) > 0 {
+			lines = append(lines, preamble...)
+			if strings.TrimSpace(lines[len(lines)-1]) != "" {
+				lines = append(lines, "")
+			}
+		}
+		lines = append(lines, trimBlankLines(block)...)
+		target := uniquePath(ProjectItemPathWithPrefix(s.Home, project, fmt.Sprintf("%04d", idx+1), root.ID, root.Title))
+		doc, err := ParseDocument(target, "project", project, []byte(strings.Join(lines, "\n")+"\n"))
+		if err != nil {
+			return report, err
+		}
+		doc.changed = true
+		if err := s.Save(doc); err != nil {
+			return report, err
+		}
+		report.Files++
+		report.Items += len(doc.Items)
+	}
+	return report, nil
+}
+
+func MigrateProjectToLocal(cwd, project, source string, force bool, now func() time.Time) (FileImportReport, LocalConfig, error) {
+	config, home, err := InitLocalStore(cwd, project)
+	if err != nil {
+		return FileImportReport{}, LocalConfig{}, err
+	}
+	if strings.TrimSpace(source) == "" {
+		legacyHome, err := Home()
+		if err != nil {
+			return FileImportReport{}, config, err
+		}
+		source = ProjectPath(legacyHome, config.Project)
+	}
+	store := NewStore(home)
+	store.Layout = StoreLayoutFiles
+	if now != nil {
+		store.Now = now
+	}
+	report, err := store.ImportFiles(source, config.Project, force)
+	return report, config, err
+}
+
+func topLevelItems(items []*Item) []*Item {
+	var roots []*Item
+	for _, item := range items {
+		if item.Depth == 0 {
+			roots = append(roots, item)
+		}
+	}
+	return roots
+}
+
+func ticketPreambleLines(lines []string, firstItemLine int) []string {
+	if firstItemLine > len(lines) {
+		firstItemLine = len(lines)
+	}
+	var out []string
+	for _, line := range lines[:firstItemLine] {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "<!-- rune-ticket-") {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 type DoctorReport struct {
@@ -816,7 +1275,7 @@ func (s Store) Doctor(fix bool) (DoctorReport, error) {
 }
 
 func (s Store) ProjectNames() ([]string, error) {
-	if err := EnsureStore(s.Home); err != nil {
+	if err := EnsureStoreLayout(s.Home, s.Layout); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(filepath.Join(s.Home, "projects"))
@@ -828,6 +1287,10 @@ func (s Store) ProjectNames() ([]string, error) {
 	}
 	var names []string
 	for _, entry := range entries {
+		if s.Layout == StoreLayoutFiles && entry.IsDir() {
+			names = append(names, cleanKey(entry.Name()))
+			continue
+		}
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
 			names = append(names, strings.TrimSuffix(entry.Name(), ".md"))
 		}
@@ -931,4 +1394,18 @@ func hasTag(tags []string, tag string) bool {
 		}
 	}
 	return false
+}
+
+func uniquePath(path string) string {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return path
+	}
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+			return candidate
+		}
+	}
 }
