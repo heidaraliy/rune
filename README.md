@@ -15,7 +15,7 @@
   <code>rune add "fix stuns" --tag combat,bug</code>
 </p>
 
-Rune stores plain Markdown in `~/notes`, detects the current git project, and gives every item a short ID that's easy to use from shell.
+Rune stores plain Markdown in `~/notes` (and optionally, within your project's root directory, under `.rune`), detects the current git project, and gives every item a short ID that's easy to use from shell.
 
 </div>
 
