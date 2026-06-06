@@ -155,7 +155,7 @@ y yank ticket
 c open ticket in Codex, then pick reasoning
 / search
 f cycle open/all/done
-s cycle document/created/finished sort
+s cycle document/created/finished sort (default: created newest)
 S reverse sort direction
 r refresh
 g toggle project/global
