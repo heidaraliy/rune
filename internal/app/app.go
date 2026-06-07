@@ -127,6 +127,8 @@ func New(store core.Store, scope core.Scope) (Model, error) {
 		scope:     scope,
 		input:     in,
 		collapsed: collapsed,
+		sortMode:  sortCreatedAt,
+		sortDesc:  true,
 	}
 	if err := m.reload(); err != nil {
 		return Model{}, err

@@ -266,26 +266,14 @@ func TestModelSortsTopLevelGroupsWithoutSplittingChildren(t *testing.T) {
 	home := t.TempDir()
 	model := sortedNestedModel(t, home)
 
-	if got := itemTitles(model.items); got != "newer parent|newer child|older parent|older child|unfinished parent" {
-		t.Fatalf("document order = %s", got)
+	if model.sortMode != sortCreatedAt || !model.sortDesc {
+		t.Fatalf("default sort state = %v desc=%v, want created desc", model.sortMode, model.sortDesc)
+	}
+	if got := itemTitles(model.items); got != "newer parent|newer child|unfinished parent|older parent|older child" {
+		t.Fatalf("default created desc sort order = %s", got)
 	}
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	model = updated.(Model)
-	if model.sortMode != sortCreatedAt || model.sortDesc {
-		t.Fatalf("sort state = %v desc=%v, want created asc", model.sortMode, model.sortDesc)
-	}
-	if got := itemTitles(model.items); got != "older parent|older child|unfinished parent|newer parent|newer child" {
-		t.Fatalf("created sort order = %s", got)
-	}
-
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
-	model = updated.(Model)
-	if got := itemTitles(model.items); got != "newer parent|newer child|unfinished parent|older parent|older child" {
-		t.Fatalf("created desc sort order = %s", got)
-	}
-
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	model = updated.(Model)
 	if model.sortMode != sortFinishedAt || !model.sortDesc {
 		t.Fatalf("sort state = %v desc=%v, want finished desc", model.sortMode, model.sortDesc)
@@ -293,8 +281,23 @@ func TestModelSortsTopLevelGroupsWithoutSplittingChildren(t *testing.T) {
 	if got := itemTitles(model.items); got != "older parent|older child|newer parent|newer child|unfinished parent" {
 		t.Fatalf("finished desc sort order = %s", got)
 	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	model = updated.(Model)
+	if got := itemTitles(model.items); got != "newer parent|newer child|older parent|older child|unfinished parent" {
+		t.Fatalf("finished asc sort order = %s", got)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = updated.(Model)
+	if model.sortMode != sortDocument || model.sortDesc {
+		t.Fatalf("sort state = %v desc=%v, want document asc", model.sortMode, model.sortDesc)
+	}
+	if got := itemTitles(model.items); got != "newer parent|newer child|older parent|older child|unfinished parent" {
+		t.Fatalf("document sort order = %s", got)
+	}
 	rendered := plainText(model.renderTop())
-	if !strings.Contains(rendered, "Sort") || !strings.Contains(rendered, "finished newest") {
+	if !strings.Contains(rendered, "Sort") || !strings.Contains(rendered, "doc") {
 		t.Fatalf("sort controls not visible in render: %q", rendered)
 	}
 }
