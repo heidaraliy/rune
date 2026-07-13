@@ -1,10 +1,11 @@
 # Rune 2 Architecture RFC
 
-Status: Slice 5A local sync foundation with revisioned editing and reversible
-tombstones. The structured store, local fake-provider loop, Rune 2 Bubble Tea
-client, revision cursor ledger, and visible conflict records are implemented
-behind the opt-in `rune v2` namespace; authentication, hosted sync, and remote
-workers remain future work.
+Status: Slice 5B transport-neutral sync foundation with revisioned editing and
+reversible tombstones. The structured store, local fake-provider loop, Rune 2
+Bubble Tea client, revision cursor ledger, file-backed development peer,
+revision-aware push/pull, artifact transfer, and visible conflict records are
+implemented behind the opt-in `rune v2` namespace; hosted authentication,
+server deployment, and remote workers remain future work.
 
 ## North Star
 
@@ -217,9 +218,13 @@ remote state is implied or overwritten.
 
 ### Slice 5B: sync and shared workspaces
 
-Add authentication, server API, revision-aware push/pull, conflict ingestion,
-and remote artifact storage after the hosted deployment and identity boundary
-are selected.
+Add a transport-neutral sync engine, persisted per-workspace cursors, unique
+operation identities, revision-aware push/pull, conflict ingestion, and
+content-addressed artifact transfer. `rune v2 sync --remote <directory>` uses
+a file-backed SQLite peer as a deterministic development harness for two or
+more local clients; it is not a hosted service or authentication layer.
+Authentication, a versioned server API, hosted deployment, and hosted artifact
+storage/retention policy remain after the identity boundary is selected.
 
 ### Slice 6: additional clients and workers
 

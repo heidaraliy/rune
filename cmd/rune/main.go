@@ -28,6 +28,7 @@ import (
 	v2artifacts "github.com/heidaraliy/rune/internal/storage/artifacts"
 	"github.com/heidaraliy/rune/internal/storage/markdown"
 	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
 
 var version = "dev"
@@ -766,40 +767,65 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
+	remote := fs.String("remote", "", "file-backed development peer directory")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "remote": true, "artifact-root": true})
 	if err != nil {
 		return err
 	}
 	if len(pos) > 0 {
 		return fmt.Errorf("unexpected argument %q", pos[0])
 	}
-	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
-	if err != nil {
-		return err
-	}
-	defer closeStore()
-	status, err := service.SyncStatus(context.Background())
-	if err != nil {
-		return err
-	}
-	conflicts, err := service.Conflicts(context.Background())
-	if err != nil {
-		return err
+	var status domain.SyncStatus
+	var conflicts []domain.Conflict
+	var pushed, pulled int
+	if strings.TrimSpace(*remote) != "" {
+		_, service, closeStore, _, err := openV2ExecutionService(cwd, "", *workspace, *dbPath, *artifactRoot)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		peer, err := runesync.OpenFilePeer(*remote)
+		if err != nil {
+			return err
+		}
+		defer peer.Close()
+		report, err := service.Sync(context.Background(), peer)
+		if err != nil {
+			return err
+		}
+		status, conflicts, pushed, pulled = report.Status, report.Conflicts, report.Pushed, report.Pulled
+	} else {
+		_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		status, err = service.SyncStatus(context.Background())
+		if err != nil {
+			return err
+		}
+		conflicts, err = service.Conflicts(context.Background())
+		if err != nil {
+			return err
+		}
 	}
 	if *jsonOut {
 		data, err := json.MarshalIndent(struct {
 			Status    domain.SyncStatus `json:"status"`
 			Conflicts []domain.Conflict `json:"conflicts"`
-		}{Status: status, Conflicts: conflicts}, "", "  ")
+			Pushed    int               `json:"pushed"`
+			Pulled    int               `json:"pulled"`
+		}{Status: status, Conflicts: conflicts, Pushed: pushed, Pulled: pulled}, "", "  ")
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(stdout, string(data))
 		return nil
 	}
-	fmt.Fprintf(stdout, "Workspace: %s\nRemote: %s\nLocal cursor: %d\nPending changes: %d\nOpen conflicts: %d\n",
-		status.WorkspaceID, status.RemoteState, status.LocalCursor, status.PendingChanges, status.OpenConflicts)
+	fmt.Fprintf(stdout, "Workspace: %s\nRemote: %s\nLocal cursor: %d\nPushed changes: %d\nPulled changes: %d\nPending changes: %d\nOpen conflicts: %d\n",
+		status.WorkspaceID, status.RemoteState, status.LocalCursor, pushed, pulled, status.PendingChanges, status.OpenConflicts)
 	for _, conflict := range conflicts {
 		fmt.Fprintf(stdout, "Conflict %s  %s  entity %s  local %d / remote %d\n",
 			domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision)

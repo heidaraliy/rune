@@ -93,6 +93,7 @@ type Change struct {
 	ID          string    `json:"id"`
 	WorkspaceID string    `json:"workspace_id"`
 	Cursor      int64     `json:"cursor"`
+	Origin      string    `json:"origin,omitempty"`
 	OperationID string    `json:"operation_id"`
 	ActorID     string    `json:"actor_id"`
 	DeviceID    string    `json:"device_id"`
@@ -102,6 +103,11 @@ type Change struct {
 	Payload     string    `json:"payload"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+const (
+	ChangeOriginLocal  = "local"
+	ChangeOriginRemote = "remote"
+)
 
 type Conflict struct {
 	ID             string    `json:"id"`
@@ -119,9 +125,20 @@ type Conflict struct {
 type SyncStatus struct {
 	WorkspaceID    string `json:"workspace_id"`
 	RemoteState    string `json:"remote_state"`
+	RemoteID       string `json:"remote_id,omitempty"`
 	LocalCursor    int64  `json:"local_cursor"`
+	PushedCursor   int64  `json:"pushed_cursor"`
+	PulledCursor   int64  `json:"pulled_cursor"`
 	PendingChanges int    `json:"pending_changes"`
 	OpenConflicts  int    `json:"open_conflicts"`
+}
+
+type SyncState struct {
+	WorkspaceID  string    `json:"workspace_id"`
+	RemoteID     string    `json:"remote_id"`
+	PushedCursor int64     `json:"pushed_cursor"`
+	PulledCursor int64     `json:"pulled_cursor"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (c Change) Validate() error {

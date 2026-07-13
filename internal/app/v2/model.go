@@ -655,16 +655,26 @@ func (m Model) renderArtifacts(width, height int) string {
 }
 
 func (m Model) renderSync(width, height int) string {
+	remoteID := m.sync.RemoteID
+	remoteNote := "Auth, push, and pull are not configured yet."
+	if remoteID == "" {
+		remoteID = "none"
+	} else {
+		remoteNote = "Push/pull use the configured development peer."
+	}
 	lines := []string{
 		"LOCAL SYNC",
 		"",
 		"remote: " + m.sync.RemoteState,
+		"remote id: " + remoteID,
 		fmt.Sprintf("local cursor: %d", m.sync.LocalCursor),
+		fmt.Sprintf("pushed cursor: %d", m.sync.PushedCursor),
+		fmt.Sprintf("pulled cursor: %d", m.sync.PulledCursor),
 		fmt.Sprintf("pending changes: %d", m.sync.PendingChanges),
 		fmt.Sprintf("open conflicts: %d", m.sync.OpenConflicts),
 		"",
 		"SQLite is authoritative while offline.",
-		"Auth, push, and pull are not configured yet.",
+		remoteNote,
 		"Edits are revision-checked; deletes create reversible tombstones.",
 	}
 	if len(m.conflicts) > 0 {

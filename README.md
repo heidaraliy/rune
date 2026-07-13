@@ -78,6 +78,7 @@ rune v2 edit <id> --title "new title"
 rune v2 delete <id> --confirm
 rune v2 restore <id>
 rune v2 sync
+rune v2 sync --remote /tmp/rune-remote --artifact-root /tmp/rune-artifacts
 rune v2 tui --project rune
 ```
 
@@ -89,8 +90,10 @@ quits. Rune 2 edits are revision-checked and recorded in the local sync ledger.
 than physically removing the item; `rune v2 restore` clears that tombstone.
 The TUI exposes `e`/`E` for title/body editing, `d` plus confirmation for
 tombstoning, and `u` for restore. `rune v2 sync` reports the local change
-cursor, pending changes, and visible conflicts; hosted sync is not configured
-yet.
+cursor, pending changes, and visible conflicts. Passing `--remote <directory>`
+exercises the revision-aware push/pull protocol against a disposable
+file-backed development peer, including artifact blobs; hosted authentication
+and a server endpoint are still future work.
 
 For notes that should travel with a repository, initialize a project-local
 store:

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestOpenUpgradesSlice2DatabaseToSlice3Schema(t *testing.T) {
+func TestOpenUpgradesSlice2DatabaseToSlice4Schema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rune-v2.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -51,8 +52,8 @@ func TestOpenUpgradesSlice2DatabaseToSlice3Schema(t *testing.T) {
 	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
 	}
 }
 
@@ -169,6 +170,84 @@ func TestDeleteAndRestoreUseReversibleTombstones(t *testing.T) {
 	}
 	if len(changes) != 3 || changes[1].Kind != "entity.deleted" || changes[2].Kind != "entity.restored" {
 		t.Fatalf("changes = %#v", changes)
+	}
+}
+
+func TestApplyRemoteChangeIsIdempotentAndConflictSafe(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remote := note
+	remote.Title = "remote"
+	remote.Revision = 2
+	remote.UpdatedAt = time.Now().UTC()
+	payload, err := json.Marshal(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := domain.Change{
+		ID:          "remote-change-1",
+		WorkspaceID: "local",
+		OperationID: "remote-operation-1",
+		ActorID:     "other-actor",
+		DeviceID:    "other-device",
+		Kind:        "entity.updated",
+		EntityID:    note.ID,
+		Revision:    remote.Revision,
+		Payload:     string(payload),
+		CreatedAt:   remote.UpdatedAt,
+		Origin:      domain.ChangeOriginRemote,
+	}
+	if _, conflict, err := store.ApplyRemoteChange(ctx, change); err != nil || conflict != nil {
+		t.Fatalf("apply remote change = conflict %v, err %v", conflict, err)
+	}
+	updated, err := store.Get(ctx, note.ID, "local")
+	if err != nil || updated.Title != "remote" || updated.Revision != 2 {
+		t.Fatalf("updated entity = %#v, err=%v", updated, err)
+	}
+	if _, conflict, err := store.ApplyRemoteChange(ctx, change); err != nil || conflict != nil {
+		t.Fatalf("replay remote change = conflict %v, err %v", conflict, err)
+	}
+	changes, err := store.ListChanges(ctx, "local", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 || changes[1].Origin != domain.ChangeOriginRemote {
+		t.Fatalf("changes after replay = %#v", changes)
+	}
+
+	title := "local"
+	if _, err := store.Update(ctx, note.ID, "local", domain.Update{ExpectedRevision: 2, Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	remote.Title = "competing remote"
+	remote.Revision = 3
+	remote.UpdatedAt = time.Now().UTC()
+	payload, err = json.Marshal(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictChange := change
+	conflictChange.ID = "remote-change-2"
+	conflictChange.OperationID = "remote-operation-2"
+	conflictChange.Revision = remote.Revision
+	conflictChange.Payload = string(payload)
+	conflictChange.CreatedAt = remote.UpdatedAt
+	_, conflict, err := store.ApplyRemoteChange(ctx, conflictChange)
+	if err != nil || conflict == nil {
+		t.Fatalf("conflicting remote change = %#v, err=%v", conflict, err)
+	}
+	local, err := store.Get(ctx, note.ID, "local")
+	if err != nil || local.Title != "local" || local.Revision != 3 {
+		t.Fatalf("local entity after conflict = %#v, err=%v", local, err)
+	}
+	conflicts, err := store.ListConflicts(ctx, "local")
+	if err != nil || len(conflicts) != 1 {
+		t.Fatalf("conflicts = %#v, err=%v", conflicts, err)
 	}
 }
 

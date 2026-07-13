@@ -184,6 +184,46 @@ func TestRunV2SyncReportsEditsAndReversibleTombstones(t *testing.T) {
 	}
 }
 
+func TestRunV2FileSyncRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	remote := filepath.Join(home, "remote")
+	dbA := filepath.Join(home, "a.db")
+	dbB := filepath.Join(home, "b.db")
+	artifactsA := filepath.Join(home, "a-artifacts")
+	artifactsB := filepath.Join(home, "b-artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "shared from A", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsA, "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("A sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Remote: configured", "Pushed changes: 1", "Pulled changes: 1", "Pending changes: 0"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("A sync missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsB, "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("B sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Pulled changes: 1") {
+		t.Fatalf("B sync output = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "shared from A") {
+		t.Fatalf("B list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunV2QueueRunAndInspectArtifacts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

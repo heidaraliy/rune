@@ -240,63 +240,100 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		version = 2
 	}
-	if version >= 3 {
-		return nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin sync schema migration: %w", err)
-	}
-	defer tx.Rollback()
-	statements := []string{
-		`CREATE TABLE sync_changes (
-			cursor INTEGER PRIMARY KEY AUTOINCREMENT,
-			id TEXT NOT NULL UNIQUE,
-			workspace_id TEXT NOT NULL,
-			operation_id TEXT NOT NULL UNIQUE,
-			actor_id TEXT NOT NULL,
-			device_id TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			entity_id TEXT NOT NULL DEFAULT '',
-			revision INTEGER NOT NULL,
-			payload TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		)`,
-		`CREATE INDEX sync_changes_workspace_cursor ON sync_changes(workspace_id, cursor ASC)`,
-		`CREATE INDEX sync_changes_workspace_entity ON sync_changes(workspace_id, entity_id, cursor ASC)`,
-		`CREATE TABLE sync_conflicts (
-			id TEXT PRIMARY KEY,
-			workspace_id TEXT NOT NULL,
-			entity_id TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			local_revision INTEGER NOT NULL,
-			remote_revision INTEGER NOT NULL,
-			local_payload TEXT NOT NULL,
-			remote_payload TEXT NOT NULL,
-			status TEXT NOT NULL CHECK (status IN ('open')),
-			created_at TEXT NOT NULL
-		)`,
-		`CREATE INDEX sync_conflicts_workspace_status ON sync_conflicts(workspace_id, status, created_at ASC)`,
-		`INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)`,
-	}
-	for index, statement := range statements {
-		if index == len(statements)-1 {
-			if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+	if version < 3 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin sync schema migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`CREATE TABLE sync_changes (
+				cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+				id TEXT NOT NULL UNIQUE,
+				workspace_id TEXT NOT NULL,
+				operation_id TEXT NOT NULL UNIQUE,
+				actor_id TEXT NOT NULL,
+				device_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				entity_id TEXT NOT NULL DEFAULT '',
+				revision INTEGER NOT NULL,
+				payload TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)`,
+			`CREATE INDEX sync_changes_workspace_cursor ON sync_changes(workspace_id, cursor ASC)`,
+			`CREATE INDEX sync_changes_workspace_entity ON sync_changes(workspace_id, entity_id, cursor ASC)`,
+			`CREATE TABLE sync_conflicts (
+				id TEXT PRIMARY KEY,
+				workspace_id TEXT NOT NULL,
+				entity_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				local_revision INTEGER NOT NULL,
+				remote_revision INTEGER NOT NULL,
+				local_payload TEXT NOT NULL,
+				remote_payload TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('open')),
+				created_at TEXT NOT NULL
+			)`,
+			`CREATE INDEX sync_conflicts_workspace_status ON sync_conflicts(workspace_id, status, created_at ASC)`,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)`,
+		}
+		for index, statement := range statements {
+			if index == len(statements)-1 {
+				if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("apply sync schema migration %d: %w", index+1, err)
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("apply sync schema migration %d: %w", index+1, err)
 			}
-			continue
 		}
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply sync schema migration %d: %w", index+1, err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit sync schema migration: %w", err)
 		}
+		version = 3
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit sync schema migration: %w", err)
+	if version < 4 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin sync state migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`ALTER TABLE sync_changes ADD COLUMN origin TEXT NOT NULL DEFAULT 'local' CHECK (origin IN ('local', 'remote'))`,
+			`CREATE TABLE sync_state (
+				workspace_id TEXT PRIMARY KEY,
+				remote_id TEXT NOT NULL DEFAULT '',
+				pushed_cursor INTEGER NOT NULL DEFAULT 0,
+				pulled_cursor INTEGER NOT NULL DEFAULT 0,
+				updated_at TEXT NOT NULL
+			)`,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?)`,
+		}
+		for index, statement := range statements {
+			if index == len(statements)-1 {
+				if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("apply sync state migration %d: %w", index+1, err)
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply sync state migration %d: %w", index+1, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit sync state migration: %w", err)
+		}
+		version = 4
 	}
 	return nil
 }
 
 func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kind, operationID, entityID string, revision int64, payload any, createdAt time.Time) error {
+	return s.recordChangeTxOrigin(ctx, tx, workspaceID, kind, operationID, entityID, revision, payload, createdAt, domain.ChangeOriginLocal)
+}
+
+func (s *Store) recordChangeTxOrigin(ctx context.Context, tx *sql.Tx, workspaceID, kind, operationID, entityID string, revision int64, payload any, createdAt time.Time, origin string) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode sync change %s: %w", kind, err)
@@ -305,6 +342,7 @@ func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kin
 	if err != nil {
 		return err
 	}
+	operationID = operationID + ":" + changeID
 	change := domain.Change{
 		ID:          changeID,
 		WorkspaceID: workspaceID,
@@ -312,6 +350,7 @@ func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kin
 		ActorID:     "local",
 		DeviceID:    "local-device",
 		Kind:        kind,
+		Origin:      origin,
 		EntityID:    entityID,
 		Revision:    revision,
 		Payload:     string(encoded),
@@ -323,6 +362,9 @@ func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kin
 	if err := change.Validate(); err != nil {
 		return err
 	}
+	if change.Origin != domain.ChangeOriginLocal && change.Origin != domain.ChangeOriginRemote {
+		return fmt.Errorf("unsupported change origin %q", change.Origin)
+	}
 	exec := func(query string, args ...any) (sql.Result, error) {
 		if tx != nil {
 			return tx.ExecContext(ctx, query, args...)
@@ -331,10 +373,10 @@ func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kin
 	}
 	if _, err := exec(`INSERT INTO sync_changes(
 		id, workspace_id, operation_id, actor_id, device_id, kind, entity_id,
-		revision, payload, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		revision, payload, created_at, origin
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		change.ID, change.WorkspaceID, change.OperationID, change.ActorID, change.DeviceID,
-		change.Kind, change.EntityID, change.Revision, change.Payload, formatTime(change.CreatedAt)); err != nil {
+		change.Kind, change.EntityID, change.Revision, change.Payload, formatTime(change.CreatedAt), change.Origin); err != nil {
 		return fmt.Errorf("record sync change %s: %w", kind, err)
 	}
 	return nil
@@ -348,7 +390,7 @@ func (s *Store) ListChanges(ctx context.Context, workspaceID string, afterCursor
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT cursor, id, workspace_id, operation_id, actor_id,
-		device_id, kind, entity_id, revision, payload, created_at
+		device_id, kind, entity_id, revision, payload, created_at, origin
 		FROM sync_changes WHERE workspace_id=? AND cursor>? ORDER BY cursor ASC LIMIT ?`, workspaceID, afterCursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list v2 sync changes: %w", err)
@@ -360,7 +402,7 @@ func (s *Store) ListChanges(ctx context.Context, workspaceID string, afterCursor
 		var created string
 		if err := rows.Scan(&change.Cursor, &change.ID, &change.WorkspaceID, &change.OperationID,
 			&change.ActorID, &change.DeviceID, &change.Kind, &change.EntityID, &change.Revision,
-			&change.Payload, &created); err != nil {
+			&change.Payload, &created, &change.Origin); err != nil {
 			return nil, fmt.Errorf("scan v2 sync change: %w", err)
 		}
 		change.CreatedAt, err = parseTime(created)
@@ -371,6 +413,42 @@ func (s *Store) ListChanges(ctx context.Context, workspaceID string, afterCursor
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read v2 sync changes: %w", err)
+	}
+	return changes, nil
+}
+
+func (s *Store) ListPendingChanges(ctx context.Context, workspaceID string, afterCursor int64, limit int) ([]domain.Change, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT cursor, id, workspace_id, operation_id, actor_id,
+		device_id, kind, entity_id, revision, payload, created_at, origin
+		FROM sync_changes WHERE workspace_id=? AND origin=? AND cursor>? ORDER BY cursor ASC LIMIT ?`,
+		workspaceID, domain.ChangeOriginLocal, afterCursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending v2 sync changes: %w", err)
+	}
+	defer rows.Close()
+	changes := make([]domain.Change, 0)
+	for rows.Next() {
+		var change domain.Change
+		var created string
+		if err := rows.Scan(&change.Cursor, &change.ID, &change.WorkspaceID, &change.OperationID,
+			&change.ActorID, &change.DeviceID, &change.Kind, &change.EntityID, &change.Revision,
+			&change.Payload, &created, &change.Origin); err != nil {
+			return nil, fmt.Errorf("scan pending v2 sync change: %w", err)
+		}
+		change.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read pending v2 sync changes: %w", err)
 	}
 	return changes, nil
 }
@@ -414,6 +492,29 @@ func (s *Store) RecordConflict(ctx context.Context, conflict domain.Conflict) (d
 	return conflict, nil
 }
 
+// RecordSyncConflict stores a conflict received from a peer. Unlike the
+// user-facing local conflict helper, peer conflicts may refer to links, runs,
+// or artifacts that do not have an entity row.
+func (s *Store) RecordSyncConflict(ctx context.Context, conflict domain.Conflict) error {
+	if conflict.ID == "" {
+		var err error
+		conflict.ID, err = domain.NewID()
+		if err != nil {
+			return err
+		}
+	}
+	if conflict.Status == "" {
+		conflict.Status = "open"
+	}
+	if conflict.CreatedAt.IsZero() {
+		conflict.CreatedAt = s.now()
+	}
+	if err := conflict.Validate(); err != nil {
+		return err
+	}
+	return insertConflict(ctx, s.db, conflict)
+}
+
 func (s *Store) ListConflicts(ctx context.Context, workspaceID string) ([]domain.Conflict, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, entity_id, kind,
 		local_revision, remote_revision, local_payload, remote_payload, status, created_at
@@ -446,11 +547,21 @@ func (s *Store) ListConflicts(ctx context.Context, workspaceID string) ([]domain
 func (s *Store) SyncStatus(ctx context.Context, workspaceID string) (domain.SyncStatus, error) {
 	var status domain.SyncStatus
 	status.WorkspaceID = workspaceID
+	state, err := s.SyncState(ctx, workspaceID)
+	if err != nil {
+		return domain.SyncStatus{}, err
+	}
+	status.RemoteID = state.RemoteID
+	status.PushedCursor = state.PushedCursor
+	status.PulledCursor = state.PulledCursor
 	status.RemoteState = "not-configured"
+	if state.RemoteID != "" {
+		status.RemoteState = "configured"
+	}
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(cursor), 0) FROM sync_changes WHERE workspace_id=?", workspaceID).Scan(&status.LocalCursor); err != nil {
 		return domain.SyncStatus{}, fmt.Errorf("read v2 sync cursor: %w", err)
 	}
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_changes WHERE workspace_id=?", workspaceID).Scan(&status.PendingChanges); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_changes WHERE workspace_id=? AND origin=? AND cursor>?", workspaceID, domain.ChangeOriginLocal, state.PushedCursor).Scan(&status.PendingChanges); err != nil {
 		return domain.SyncStatus{}, fmt.Errorf("count v2 pending changes: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_conflicts WHERE workspace_id=? AND status='open'", workspaceID).Scan(&status.OpenConflicts); err != nil {
@@ -1026,7 +1137,11 @@ func (s *Store) QueueRun(ctx context.Context, run domain.Run, contextArtifact *d
 		}
 		return domain.Run{}, domain.Artifact{}, fmt.Errorf("task %s changed while queueing", domain.DisplayID(run.TaskID))
 	}
-	queuedEvent := domain.RunEvent{RunID: run.ID, Sequence: 1, Kind: "status", Payload: string(run.Status)}
+	queuedEvent := domain.RunEvent{RunID: run.ID, Sequence: 1, Kind: "status", Payload: string(run.Status), CreatedAt: run.CreatedAt}
+	queuedEvent.ID, err = domain.NewID()
+	if err != nil {
+		return domain.Run{}, domain.Artifact{}, err
+	}
 	if err := insertRunEvent(ctx, tx, queuedEvent, run.CreatedAt); err != nil {
 		return domain.Run{}, domain.Artifact{}, err
 	}

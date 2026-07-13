@@ -209,7 +209,7 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "remote id: none") || !strings.Contains(model.View(), "pushed cursor: 0") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
 		t.Fatalf("sync view =\n%s", model.View())
 	}
 }
