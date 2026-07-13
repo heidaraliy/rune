@@ -1,8 +1,8 @@
 # Rune 2 Architecture RFC
 
-Status: Slice 3 local execution vertical slice. The structured store and local
-fake-provider loop are implemented behind the opt-in `rune v2` namespace; sync,
-remote workers, and the new TUI remain future slices.
+Status: Slice 4 local TUI vertical slice. The structured store, local
+fake-provider loop, and first Rune 2 Bubble Tea client are implemented behind
+the opt-in `rune v2` namespace; sync and remote workers remain future slices.
 
 ## North Star
 
@@ -194,6 +194,11 @@ remote worker or hidden model reasoning.
 
 Build the new client shell over application services with note/task, graph,
 queue, run, artifact, and conflict views.
+
+The initial client is available through `rune v2 tui`. It keeps the legacy TUI
+separate, renders workspace entities with typed links, exposes run and artifact
+inspection, supports capture/search/queue/execute/cancel actions, and labels
+the local-only sync/conflict boundary until Slice 5 adds real conflict records.
 
 ### Slice 5: sync and shared workspaces
 

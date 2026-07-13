@@ -290,6 +290,10 @@ func (s V2Service) Artifacts(ctx context.Context, runID string) ([]domain.Artifa
 	return s.Store.ListArtifacts(ctx, s.WorkspaceID, run.ID)
 }
 
+func (s V2Service) AllArtifacts(ctx context.Context) ([]domain.Artifact, error) {
+	return s.Store.ListArtifacts(ctx, s.WorkspaceID, "")
+}
+
 func (s V2Service) Artifact(ctx context.Context, artifactID string) (domain.Artifact, error) {
 	return s.Store.GetArtifact(ctx, artifactID, s.WorkspaceID)
 }

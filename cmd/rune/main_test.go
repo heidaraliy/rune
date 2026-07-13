@@ -8,8 +8,18 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	v2app "github.com/heidaraliy/rune/internal/app/v2"
 	"github.com/heidaraliy/rune/internal/handoff"
 )
+
+type captureProgram struct {
+	model tea.Model
+}
+
+func (p captureProgram) Run() (tea.Model, error) {
+	return p.model, nil
+}
 
 func gitProjectDir(t *testing.T, name string) string {
 	t.Helper()
@@ -195,6 +205,28 @@ func TestRunV2CancelMarksQueuedRunAndTask(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Status: canceled") {
 		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2TUILaunchesStructuredClient(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	oldProgram := newProgram
+	defer func() { newProgram = oldProgram }()
+	var captured tea.Model
+	newProgram = func(model tea.Model) programRunner {
+		captured = model
+		return captureProgram{model: model}
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "tui", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("tui code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, ok := captured.(v2app.Model); !ok {
+		t.Fatalf("captured model = %T, want v2 app model", captured)
 	}
 }
 

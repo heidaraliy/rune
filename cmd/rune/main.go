@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/heidaraliy/rune/internal/app"
+	v2app "github.com/heidaraliy/rune/internal/app/v2"
 	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/core"
 	"github.com/heidaraliy/rune/internal/domain"
@@ -41,7 +42,7 @@ var (
 	tmuxSession     = handoff.IsTmuxSession
 	writeTmuxBuffer = handoff.LoadTmuxBuffer
 	runCodex        = handoff.RunCodex
-	newProgram      = func(model app.Model) programRunner {
+	newProgram      = func(model tea.Model) programRunner {
 		return tea.NewProgram(model, tea.WithAltScreen())
 	}
 )
@@ -327,7 +328,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 
 func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
 	if len(args) == 0 {
-		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, or import")
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, tui, or import")
 	}
 	switch args[0] {
 	case "init":
@@ -360,6 +361,8 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2Artifacts(args[1:], stdout, cwd)
 	case "artifact":
 		return runV2Artifact(args[1:], stdout, cwd)
+	case "tui":
+		return runV2TUI(args[1:], stdout, stderr, cwd)
 	case "import":
 		return runV2Import(args[1:], stdout, cwd)
 	default:
@@ -386,6 +389,37 @@ func runV2Init(args []string, stdout io.Writer, cwd string) error {
 	defer closeStore()
 	_ = service
 	fmt.Fprintf(stdout, "Initialized Rune 2 workspace %s at %s\n", *workspace, path)
+	return nil
+}
+
+func runV2TUI(args []string, stdout, stderr io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 tui", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	scope, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	model, err := v2app.New(service, *workspace, scope.Project)
+	if err != nil {
+		return err
+	}
+	if _, err := newProgram(model).Run(); err != nil {
+		return err
+	}
+	_ = stdout
+	_ = stderr
 	return nil
 }
 
@@ -1850,7 +1884,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
-	  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|import> ...
+	  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|tui|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global
