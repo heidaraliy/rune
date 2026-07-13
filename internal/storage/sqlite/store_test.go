@@ -2,8 +2,10 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,38 @@ func openTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestOpenUpgradesSlice2DatabaseToSlice3Schema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rune-v2.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+		"CREATE TABLE entities (id TEXT PRIMARY KEY)",
+		"INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-07-01T00:00:00Z')",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var version int
+	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
+	}
 }
 
 func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
@@ -102,6 +136,63 @@ func TestCreateRejectsCrossWorkspaceReferences(t *testing.T) {
 	}
 	if _, err := store.Create(ctx, domain.Entity{Kind: domain.KindTask, WorkspaceID: "two", Title: "child", ParentID: parent.ID}); err == nil {
 		t.Fatal("cross-workspace parent should fail")
+	}
+}
+
+func TestQueueRunTransitionsTaskAndPersistsEventsAndArtifacts(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	task, err := store.Create(ctx, domain.Entity{Kind: domain.KindTask, WorkspaceID: "local", Title: "execute me", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := domain.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactID, err := domain.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("b", 64)
+	run, artifact, err := store.QueueRun(ctx, domain.Run{ID: runID, WorkspaceID: "local", TaskID: task.ID, Provider: "fake", Status: domain.RunStatusQueued, PermissionPolicy: domain.PermissionReadOnly, ContextSnapshot: `{"schema":"rune.context.v1"}`}, &domain.Artifact{
+		ID: artifactID, WorkspaceID: "local", RunID: runID, EntityID: task.ID, Kind: "context", Name: "context.json", MediaType: "application/json", SizeBytes: 32, SHA256: hash, StorageKey: "sha256/bb/" + hash, Retention: "permanent", SecretState: "clear",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ContextArtifactID != artifact.ID || artifact.ID != artifactID {
+		t.Fatalf("run/artifact = %#v / %#v", run, artifact)
+	}
+	queuedTask, err := store.Get(ctx, task.ID, "local")
+	if err != nil || queuedTask.Status != domain.StatusQueued || queuedTask.Revision != 2 {
+		t.Fatalf("queued task = %#v, err=%v", queuedTask, err)
+	}
+	ready := domain.StatusReady
+	if _, err := store.Update(ctx, task.ID, "local", domain.Update{Status: &ready}); err == nil {
+		t.Fatal("active run should own task status")
+	}
+	for _, status := range []domain.RunStatus{domain.RunStatusRunning, domain.RunStatusReview, domain.RunStatusCompleted} {
+		if _, err := store.SetRunStatus(ctx, run.ID, "local", status, "done", ""); err != nil {
+			t.Fatalf("status %s: %v", status, err)
+		}
+	}
+	got, err := store.GetRun(ctx, run.ID, "local")
+	if err != nil || got.Status != domain.RunStatusCompleted || got.FinishedAt == nil || got.Revision != 4 {
+		t.Fatalf("completed run = %#v, err=%v", got, err)
+	}
+	events, err := store.ListRunEvents(ctx, run.ID, "local")
+	if err != nil || len(events) != 4 {
+		t.Fatalf("events = %#v, err=%v", events, err)
+	}
+	for index, event := range events {
+		if event.Sequence != int64(index+1) {
+			t.Fatalf("event sequence = %#v", events)
+		}
+	}
+	artifacts, err := store.ListArtifacts(ctx, "local", run.ID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].Kind != "context" {
+		t.Fatalf("artifacts = %#v, err=%v", artifacts, err)
 	}
 }
 

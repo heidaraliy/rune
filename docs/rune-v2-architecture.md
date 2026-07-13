@@ -1,8 +1,8 @@
 # Rune 2 Architecture RFC
 
-Status: Slice 1 design contract. This document describes the target
-architecture; it does not claim that the structured store, sync service, or
-agent worker already exists.
+Status: Slice 3 local execution vertical slice. The structured store and local
+fake-provider loop are implemented behind the opt-in `rune v2` namespace; sync,
+remote workers, and the new TUI remain future slices.
 
 ## North Star
 
@@ -183,6 +183,12 @@ status, and links. The initial implementation is exposed behind the opt-in
 
 Add task queueing, a fake/local agent adapter, run lifecycle, context snapshots,
 content-addressed artifacts, and terminal inspection of the full loop.
+
+The initial implementation queues draft or ready tasks into SQLite, persists a
+JSON context snapshot plus provider output under a content-addressed artifact
+root, records visible run events, and exposes queue/run/runs/artifacts commands.
+The fake provider is deterministic and intentionally does not represent a
+remote worker or hidden model reasoning.
 
 ### Slice 4: Rune 2 TUI
 

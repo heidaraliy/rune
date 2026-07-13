@@ -56,3 +56,30 @@ func TestNormalizeTagsDeduplicatesWithoutSortingContent(t *testing.T) {
 		t.Fatalf("tags = %#v", got)
 	}
 }
+
+func TestRunLifecycleAndArtifactValidation(t *testing.T) {
+	run := Run{ID: "run", WorkspaceID: "local", TaskID: "task", Provider: "fake", Status: RunStatusQueued, PermissionPolicy: PermissionReadOnly, Revision: 1}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, transition := range [][2]RunStatus{
+		{RunStatusQueued, RunStatusRunning},
+		{RunStatusRunning, RunStatusReview},
+		{RunStatusReview, RunStatusCompleted},
+	} {
+		if !CanTransitionRun(transition[0], transition[1]) {
+			t.Fatalf("transition %s -> %s should be valid", transition[0], transition[1])
+		}
+	}
+	if CanTransitionRun(RunStatusCompleted, RunStatusRunning) {
+		t.Fatal("completed run should be terminal")
+	}
+	artifact := Artifact{ID: "artifact", WorkspaceID: "local", Kind: "result", Name: "result.md", MediaType: "text/markdown", SizeBytes: 10, SHA256: strings.Repeat("a", 64), StorageKey: "sha256/aa/" + strings.Repeat("a", 64), Retention: "normal", SecretState: "clear"}
+	if err := artifact.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	artifact.SecretState = "secret"
+	if err := artifact.Validate(); err == nil {
+		t.Fatal("unknown secret state should fail")
+	}
+}

@@ -60,13 +60,20 @@ RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
 
 Rune 2 is available as an opt-in local structured-store preview. It uses SQLite
-at `RUNE_HOME/rune-v2.db` by default, or an explicit `--db` path, and does not
-sync to the cloud yet:
+at `RUNE_HOME/rune-v2.db` by default, or an explicit `--db` path. Execution
+artifacts live in the content-addressed `RUNE_HOME/rune-v2-artifacts` directory
+by default, and the preview does not sync to the cloud yet:
 
 ```sh
 rune v2 capture "design sync" --project rune
 rune v2 list --project rune
 rune v2 import path/to/notes.md --project rune --db /path/to/rune-v2.db
+rune v2 queue <task-id>
+rune v2 run <run-id>
+rune v2 cancel <run-id>
+rune v2 runs
+rune v2 artifacts <run-id>
+rune v2 artifact <artifact-id>
 ```
 
 For notes that should travel with a repository, initialize a project-local
@@ -128,7 +135,7 @@ rune init [--project lune]
 rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
-rune v2 <init|capture|list|show|edit|status|search|link|links|import> ...
+  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|import> ...
 ```
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can

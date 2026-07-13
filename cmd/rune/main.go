@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/heidaraliy/rune/internal/core"
 	"github.com/heidaraliy/rune/internal/domain"
 	"github.com/heidaraliy/rune/internal/handoff"
+	v2artifacts "github.com/heidaraliy/rune/internal/storage/artifacts"
 	"github.com/heidaraliy/rune/internal/storage/markdown"
 	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
 )
@@ -325,7 +327,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 
 func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
 	if len(args) == 0 {
-		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, or import")
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, or import")
 	}
 	switch args[0] {
 	case "init":
@@ -346,6 +348,18 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2Link(args[1:], stdout, cwd)
 	case "links":
 		return runV2Links(args[1:], stdout, cwd)
+	case "queue":
+		return runV2Queue(args[1:], stdout, cwd)
+	case "run":
+		return runV2Run(args[1:], stdout, cwd)
+	case "cancel":
+		return runV2Cancel(args[1:], stdout, cwd)
+	case "runs":
+		return runV2Runs(args[1:], stdout, cwd)
+	case "artifacts":
+		return runV2Artifacts(args[1:], stdout, cwd)
+	case "artifact":
+		return runV2Artifact(args[1:], stdout, cwd)
 	case "import":
 		return runV2Import(args[1:], stdout, cwd)
 	default:
@@ -726,6 +740,254 @@ func runV2Links(args []string, stdout io.Writer, cwd string) error {
 	return nil
 }
 
+func runV2Queue(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 queue", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	provider := fs.String("provider", "fake", "agent provider")
+	model := fs.String("model", "local", "model profile")
+	permission := fs.String("permission", "read-only", "permission policy")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "provider": true, "model": true, "permission": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 queue requires one task id")
+	}
+	policy, err := domain.NormalizePermissionPolicy(*permission)
+	if err != nil {
+		return err
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.QueueRun(context.Background(), pos[0], *provider, *model, policy)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(run, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	fmt.Fprintf(stdout, "Queued run %s  task %s  provider %s\n", domain.DisplayID(run.ID), domain.DisplayID(run.TaskID), run.Provider)
+	fmt.Fprintf(stdout, "Context artifact: %s\n", domain.DisplayID(run.ContextArtifactID))
+	return nil
+}
+
+func runV2Run(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 run requires one queued run id")
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.ExecuteRun(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Run %s  %s  %s\n", domain.DisplayID(run.ID), run.Status, run.Summary)
+	return nil
+}
+
+func runV2Cancel(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 cancel", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 cancel requires one run id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.CancelRun(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Run %s  %s\n", domain.DisplayID(run.ID), run.Status)
+	return nil
+}
+
+func runV2Runs(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 runs", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	status := fs.String("status", "", "run status")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "status": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return errors.New("v2 runs accepts at most one task id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	options := domain.RunListOptions{}
+	if *status != "" {
+		options.Status, err = domain.NormalizeRunStatus(*status)
+		if err != nil {
+			return err
+		}
+	}
+	if len(pos) == 1 {
+		task, err := service.Get(context.Background(), pos[0])
+		if err != nil {
+			return err
+		}
+		options.TaskID = task.ID
+	}
+	runs, err := service.Runs(context.Background(), options)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(runs, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(runs) == 0 {
+		fmt.Fprintln(stdout, "No v2 runs.")
+		return nil
+	}
+	for _, run := range runs {
+		fmt.Fprintf(stdout, "%s  %-9s  task %s  %s", domain.DisplayID(run.ID), run.Status, domain.DisplayID(run.TaskID), run.Provider)
+		if run.Summary != "" {
+			fmt.Fprintf(stdout, "  %s", run.Summary)
+		}
+		fmt.Fprintln(stdout)
+	}
+	return nil
+}
+
+func runV2Artifacts(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 artifacts", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 artifacts requires one run id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	items, err := service.Artifacts(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(stdout, "No v2 artifacts.")
+		return nil
+	}
+	for _, artifact := range items {
+		fmt.Fprintf(stdout, "%s  %-8s  %-20s  %d bytes  sha256:%s\n", domain.DisplayID(artifact.ID), artifact.Kind, artifact.Name, artifact.SizeBytes, artifact.SHA256[:12])
+	}
+	return nil
+}
+
+func runV2Artifact(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 artifact", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	raw := fs.Bool("raw", false, "write content only")
+	jsonOut := fs.Bool("json", false, "json metadata")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 artifact requires one artifact id")
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	if *jsonOut {
+		artifact, err := service.Artifact(context.Background(), pos[0])
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(artifact, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	artifact, content, err := service.ReadArtifact(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	if *raw {
+		_, err = stdout.Write(content)
+		return err
+	}
+	fmt.Fprintf(stdout, "ID: %s\nKind: %s\nName: %s\nMedia type: %s\nSize: %d bytes\nSHA-256: %s\nRetention: %s\nSecret state: %s\n\nContent:\n", artifact.ID, artifact.Kind, artifact.Name, artifact.MediaType, artifact.SizeBytes, artifact.SHA256, artifact.Retention, artifact.SecretState)
+	if strings.HasPrefix(artifact.MediaType, "text/") || artifact.MediaType == "application/json" {
+		fmt.Fprintln(stdout, string(content))
+	} else {
+		fmt.Fprintln(stdout, "(binary artifact; use --raw to write content)")
+	}
+	return nil
+}
+
 func runV2Import(args []string, stdout io.Writer, cwd string) error {
 	fs := flag.NewFlagSet("rune v2 import", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -760,9 +1022,36 @@ func runV2Import(args []string, stdout io.Writer, cwd string) error {
 }
 
 func openV2Service(cwd, project, workspace, dbPath string) (core.Scope, application.V2Service, func() error, string, error) {
-	scope, err := core.ResolveScope(cwd, false, project)
+	scope, store, closeStore, dbPath, err := openV2Store(cwd, project, workspace, dbPath)
 	if err != nil {
 		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	return scope, application.NewV2Service(store, workspace), closeStore, dbPath, nil
+}
+
+func openV2ExecutionService(cwd, project, workspace, dbPath, artifactRoot string) (core.Scope, application.V2Service, func() error, string, error) {
+	scope, store, closeStore, dbPath, err := openV2Store(cwd, project, workspace, dbPath)
+	if err != nil {
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	if strings.TrimSpace(artifactRoot) == "" {
+		artifactRoot = strings.TrimSpace(os.Getenv("RUNE_V2_ARTIFACTS"))
+	}
+	if strings.TrimSpace(artifactRoot) == "" {
+		artifactRoot = filepath.Join(scope.Home, "rune-v2-artifacts")
+	}
+	artifactStore, err := v2artifacts.Open(artifactRoot)
+	if err != nil {
+		_ = closeStore()
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	return scope, application.NewV2ExecutionService(store, workspace, artifactStore), closeStore, dbPath, nil
+}
+
+func openV2Store(cwd, project, workspace, dbPath string) (core.Scope, *v2sqlite.Store, func() error, string, error) {
+	scope, err := core.ResolveScope(cwd, false, project)
+	if err != nil {
+		return core.Scope{}, nil, nil, "", err
 	}
 	if strings.TrimSpace(dbPath) == "" {
 		dbPath = strings.TrimSpace(os.Getenv("RUNE_V2_DB"))
@@ -772,9 +1061,9 @@ func openV2Service(cwd, project, workspace, dbPath string) (core.Scope, applicat
 	}
 	store, err := v2sqlite.Open(dbPath)
 	if err != nil {
-		return core.Scope{}, application.V2Service{}, nil, "", err
+		return core.Scope{}, nil, nil, "", err
 	}
-	return scope, application.NewV2Service(store, workspace), store.Close, dbPath, nil
+	return scope, store, store.Close, dbPath, nil
 }
 
 type codexReasoningFlag struct {
@@ -1530,6 +1819,24 @@ func printError(w io.Writer, err error) {
 		fmt.Fprintln(w, "\nUse a longer id.")
 		return
 	}
+	var ambiguousRun *v2sqlite.AmbiguousRunIDError
+	if errors.As(err, &ambiguousRun) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousRun.Error())
+		for _, run := range ambiguousRun.Matches {
+			fmt.Fprintf(w, "%-8s %s %s\n", domain.DisplayID(run.ID), run.Status, domain.DisplayID(run.TaskID))
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
+	var ambiguousArtifact *v2sqlite.AmbiguousArtifactIDError
+	if errors.As(err, &ambiguousArtifact) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousArtifact.Error())
+		for _, artifact := range ambiguousArtifact.Matches {
+			fmt.Fprintf(w, "%-8s %s\n", domain.DisplayID(artifact.ID), artifact.Name)
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
 	fmt.Fprintf(w, "rune: %v\n", err)
 }
 
@@ -1543,7 +1850,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
-  rune v2 <init|capture|list|show|edit|status|search|link|links|import> ...
+	  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global

@@ -121,6 +121,83 @@ func TestRunV2LocalStructuredCaptureEditLinkAndSearch(t *testing.T) {
 	}
 }
 
+func TestRunV2QueueRunAndInspectArtifacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	artifactRoot := filepath.Join(home, "artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"v2", "capture", "execute from terminal", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "queue", taskID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("queue code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	queueLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	runID := strings.Fields(queueLines[0])[2]
+	contextID := strings.Fields(queueLines[1])[2]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "run", runID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "completed") {
+		t.Fatalf("run code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "artifacts", runID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "context.json") || !strings.Contains(stdout.String(), "result.md") {
+		t.Fatalf("artifacts code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "artifact", contextID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "rune.context.v1") {
+		t.Fatalf("artifact code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "Status: completed") {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2CancelMarksQueuedRunAndTask(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	artifactRoot := filepath.Join(home, "artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "capture", "cancel me", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "queue", taskID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("queue code=%d stderr=%q", code, stderr.String())
+	}
+	runID := strings.Fields(stdout.String())[2]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "cancel", runID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "canceled") {
+		t.Fatalf("cancel code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Status: canceled") {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunV2ImportIsSourcePreservingAndIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
