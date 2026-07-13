@@ -1,9 +1,10 @@
 # Rune 2 Architecture RFC
 
-Status: Slice 5A append-only local sync foundation. The structured store, local
-fake-provider loop, Rune 2 Bubble Tea client, revision cursor ledger, and
-visible conflict records are implemented behind the opt-in `rune v2` namespace;
-authentication, hosted sync, and remote workers remain future work.
+Status: Slice 5A local sync foundation with revisioned editing and reversible
+tombstones. The structured store, local fake-provider loop, Rune 2 Bubble Tea
+client, revision cursor ledger, and visible conflict records are implemented
+behind the opt-in `rune v2` namespace; authentication, hosted sync, and remote
+workers remain future work.
 
 ## North Star
 
@@ -64,12 +65,11 @@ Initial task states are `draft`, `ready`, `queued`, `running`, `blocked`,
 `review`, `completed`, `failed`, and `canceled`. The state machine must be
 explicit rather than inferred from a checkbox.
 
-Authored note and task identity/content is immutable after capture or import.
-Rune 2 has no edit or delete operation for authored items. Task lifecycle
-status changes are system-owned transitions produced by explicit status,
-queue, run, and cancel operations; they do not rewrite the authored title,
-body, or properties. To revise an idea, capture a new item and relate it to
-the original.
+Note and task edits are revision-checked and preserved in the sync ledger.
+Deletion is a reversible tombstone: Rune 2 never physically removes authored
+items, and restore clears the tombstone with another revisioned change. Task
+lifecycle status changes remain explicit transitions produced by status, queue,
+run, and cancel operations.
 
 ### Link
 
@@ -183,9 +183,9 @@ included in this slice.
 ### Slice 2: local structured foundation
 
 Add domain types, repository interfaces, SQLite schema/migrations, stable IDs,
-legacy Markdown import, and CLI parity for capture, list, show, search, status,
-and links. Rune 2 authored items are append-only; the legacy CLI remains
-unchanged while the opt-in `rune v2` namespace uses the structured store.
+legacy Markdown import, and CLI parity for capture, list, show, edit, delete,
+restore, search, status, and links. The legacy CLI remains unchanged while the
+opt-in `rune v2` namespace uses the structured store.
 
 ### Slice 3: local execution vertical slice
 
@@ -208,11 +208,12 @@ separate, renders workspace entities with typed links, exposes run and artifact
 inspection, supports capture/search/queue/execute/cancel actions, and shows the
 local sync cursor plus open conflicts.
 
-### Slice 5A: append-only sync foundation
+### Slice 5A: revisioned local sync foundation
 
-Add the local change ledger, monotonic cursors, conflict records containing
-both payloads, `rune v2 sync` inspection, and a TUI sync surface. The local
-store remains authoritative offline; no remote state is implied or overwritten.
+Add revisioned edits, reversible tombstones, the local change ledger, monotonic
+cursors, conflict records containing both payloads, `rune v2 sync` inspection,
+and a TUI sync surface. The local store remains authoritative offline; no
+remote state is implied or overwritten.
 
 ### Slice 5B: sync and shared workspaces
 

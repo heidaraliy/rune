@@ -47,8 +47,24 @@ func (s V2Service) List(ctx context.Context, options domain.ListOptions) ([]doma
 	return s.Store.List(ctx, options)
 }
 
+func (s V2Service) GetIncludingDeleted(ctx context.Context, prefix string) (domain.Entity, error) {
+	return s.Store.GetIncludingDeleted(ctx, prefix, s.WorkspaceID)
+}
+
+func (s V2Service) Update(ctx context.Context, prefix string, update domain.Update) (domain.Entity, error) {
+	return s.Store.Update(ctx, prefix, s.WorkspaceID, update)
+}
+
 func (s V2Service) SetTaskStatus(ctx context.Context, prefix string, status domain.Status, expectedRevision int64) (domain.Entity, error) {
 	return s.Store.SetTaskStatus(ctx, prefix, s.WorkspaceID, status, expectedRevision)
+}
+
+func (s V2Service) Delete(ctx context.Context, prefix string, expectedRevision int64) (domain.Entity, error) {
+	return s.Store.Delete(ctx, prefix, s.WorkspaceID, expectedRevision)
+}
+
+func (s V2Service) Restore(ctx context.Context, prefix string, expectedRevision int64) (domain.Entity, error) {
+	return s.Store.Restore(ctx, prefix, s.WorkspaceID, expectedRevision)
 }
 
 func (s V2Service) Link(ctx context.Context, from, to, kind string) (domain.Link, error) {

@@ -59,6 +59,17 @@ type Entity struct {
 	DeletedAt    *time.Time        `json:"deleted_at,omitempty"`
 }
 
+type Update struct {
+	ExpectedRevision int64
+	Title            *string
+	Body             *string
+	AppendBody       *string
+	Heading          *string
+	Tags             *[]string
+	Status           *Status
+	Priority         *int
+}
+
 type ListOptions struct {
 	WorkspaceID    string
 	Project        string

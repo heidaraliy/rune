@@ -328,7 +328,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 
 func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
 	if len(args) == 0 {
-		return errors.New("v2 requires a subcommand: init, capture, list, show, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, tui, or import")
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, delete, restore, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, tui, or import")
 	}
 	switch args[0] {
 	case "init":
@@ -339,8 +339,12 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2List(args[1:], stdout, cwd)
 	case "show":
 		return runV2Show(args[1:], stdout, cwd)
-	case "edit", "delete":
-		return errors.New("rune v2 is append-only: authored notes and tasks cannot be edited or deleted; capture a new item instead")
+	case "edit":
+		return runV2Edit(args[1:], stdout, cwd)
+	case "delete":
+		return runV2Delete(args[1:], stdout, cwd)
+	case "restore":
+		return runV2Restore(args[1:], stdout, cwd)
 	case "status":
 		return runV2Status(args[1:], stdout, cwd)
 	case "search", "find":
@@ -486,8 +490,9 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	query := fs.String("query", "", "search title and body")
 	all := fs.Bool("all", false, "all projects in the workspace")
 	global := fs.Bool("global", false, "all projects in the workspace")
+	deleted := fs.Bool("deleted", false, "include deleted tombstones")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true, "deleted": false})
 	if err != nil {
 		return err
 	}
@@ -503,7 +508,7 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	if *all || *global {
 		projectName = ""
 	}
-	options := domain.ListOptions{Project: projectName, Query: *query}
+	options := domain.ListOptions{Project: projectName, Query: *query, IncludeDeleted: *deleted}
 	if *kind != "" {
 		options.Kind = domain.Kind(*kind)
 		if options.Kind != domain.KindNote && options.Kind != domain.KindTask {
@@ -538,6 +543,9 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 		if status == "" {
 			status = "note"
 		}
+		if item.DeletedAt != nil {
+			status = "deleted"
+		}
 		fmt.Fprintf(stdout, "%s  %-4s  %-10s  %s", domain.DisplayID(item.ID), item.Kind, status, item.Title)
 		if item.Project != "" {
 			fmt.Fprintf(stdout, "  [%s]", item.Project)
@@ -552,7 +560,8 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	deleted := fs.Bool("deleted", false, "include a deleted tombstone")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "deleted": false})
 	if err != nil {
 		return err
 	}
@@ -564,7 +573,12 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 		return err
 	}
 	defer closeStore()
-	entity, err := service.Get(context.Background(), pos[0])
+	var entity domain.Entity
+	if *deleted {
+		entity, err = service.GetIncludingDeleted(context.Background(), pos[0])
+	} else {
+		entity, err = service.Get(context.Background(), pos[0])
+	}
 	if err != nil {
 		return err
 	}
@@ -574,6 +588,9 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	}
 	if entity.Status != "" {
 		fmt.Fprintf(stdout, "Status: %s\n", entity.Status)
+	}
+	if entity.DeletedAt != nil {
+		fmt.Fprintf(stdout, "Deleted at: %s\n", entity.DeletedAt.UTC().Format(time.RFC3339))
 	}
 	if len(entity.Tags) > 0 {
 		fmt.Fprintf(stdout, "Tags: #%s\n", strings.Join(entity.Tags, " #"))
@@ -591,6 +608,126 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 			fmt.Fprintf(stdout, "- %s %s %s\n", link.Kind, domain.DisplayID(link.FromID), domain.DisplayID(link.ToID))
 		}
 	}
+	return nil
+}
+
+func runV2Edit(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 edit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	title := fs.String("title", "", "new title")
+	body := fs.String("body", "", "replace body")
+	appendBody := fs.String("end", "", "append body")
+	status := fs.String("status", "", "task status")
+	priority := fs.Int("priority", 0, "priority")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "status": true, "priority": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 edit requires one id")
+	}
+	provided := make(map[string]bool)
+	fs.Visit(func(flag *flag.Flag) {
+		provided[flag.Name] = true
+	})
+	update := domain.Update{ExpectedRevision: *revision}
+	changed := false
+	if provided["title"] {
+		update.Title = stringUpdate(core.DecodeEscapes(*title))
+		changed = true
+	}
+	if provided["body"] {
+		update.Body = stringUpdate(core.DecodeEscapes(*body))
+		changed = true
+	}
+	if provided["end"] {
+		update.AppendBody = stringUpdate(core.DecodeEscapes(*appendBody))
+		changed = true
+	}
+	if provided["status"] {
+		parsed, err := domain.NormalizeStatus(*status)
+		if err != nil {
+			return err
+		}
+		update.Status = &parsed
+		changed = true
+	}
+	if provided["priority"] {
+		update.Priority = priority
+		changed = true
+	}
+	if !changed {
+		return errors.New("v2 edit requires --title, --body, --end, --status, or --priority")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Update(context.Background(), pos[0], update)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Delete(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 delete", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	confirm := fs.Bool("confirm", false, "confirm reversible tombstone")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true, "confirm": false})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 delete requires one id")
+	}
+	if !*confirm {
+		return errors.New("v2 delete requires --confirm; this creates a reversible tombstone")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Delete(context.Background(), pos[0], *revision)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Tombstoned %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Restore(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 restore", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 restore requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Restore(context.Background(), pos[0], *revision)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Restored %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
 	return nil
 }
 
@@ -1580,6 +1717,10 @@ func readAll(r io.Reader) (string, error) {
 	var buf bytes.Buffer
 	_, err := io.Copy(&buf, r)
 	return buf.String(), err
+}
+
+func stringUpdate(value string) *string {
+	return &value
 }
 
 func printItems(w io.Writer, home string, items []*core.Item) {

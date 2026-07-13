@@ -522,6 +522,28 @@ func (s *Store) Get(ctx context.Context, prefix string, workspaceID string) (dom
 	}
 }
 
+func (s *Store) GetIncludingDeleted(ctx context.Context, prefix string, workspaceID string) (domain.Entity, error) {
+	entities, err := s.list(ctx, domain.ListOptions{WorkspaceID: workspaceID, IncludeDeleted: true})
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	prefix = strings.TrimSpace(prefix)
+	var matches []domain.Entity
+	for _, entity := range entities {
+		if prefix == "" || strings.HasPrefix(entity.ID, prefix) {
+			matches = append(matches, entity)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return domain.Entity{}, fmt.Errorf("no v2 entity matches id %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return domain.Entity{}, &AmbiguousIDError{Prefix: prefix, Matches: matches}
+	}
+}
+
 func (s *Store) List(ctx context.Context, opts domain.ListOptions) ([]domain.Entity, error) {
 	return s.list(ctx, opts)
 }
@@ -574,6 +596,103 @@ func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 		return nil, fmt.Errorf("read v2 entities: %w", err)
 	}
 	return entities, nil
+}
+
+func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update domain.Update) (domain.Entity, error) {
+	current, err := s.Get(ctx, prefix, workspaceID)
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	if update.ExpectedRevision != 0 && update.ExpectedRevision != current.Revision {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), update.ExpectedRevision, current.Revision)
+	}
+	if update.Title != nil {
+		current.Title = strings.TrimSpace(*update.Title)
+	}
+	if update.Body != nil {
+		current.Body = *update.Body
+	}
+	if update.AppendBody != nil {
+		if current.Body != "" && !strings.HasSuffix(current.Body, "\n") {
+			current.Body += "\n"
+		}
+		current.Body += *update.AppendBody
+	}
+	if update.Heading != nil {
+		current.Heading = strings.TrimSpace(*update.Heading)
+	}
+	if update.Tags != nil {
+		current.Tags = domain.NormalizeTags(*update.Tags)
+	}
+	if update.Priority != nil {
+		current.Priority = *update.Priority
+	}
+	if update.Status != nil {
+		status, err := domain.NormalizeStatus(string(*update.Status))
+		if err != nil {
+			return domain.Entity{}, err
+		}
+		if !current.IsTask() {
+			return domain.Entity{}, errors.New("notes cannot have task status")
+		}
+		if status == "" {
+			status = domain.StatusDraft
+		}
+		if status != current.Status {
+			var activeRuns int
+			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE task_id=? AND status IN (?, ?, ?)", current.ID, domain.RunStatusQueued, domain.RunStatusRunning, domain.RunStatusReview).Scan(&activeRuns); err != nil {
+				return domain.Entity{}, fmt.Errorf("check active v2 runs: %w", err)
+			}
+			if activeRuns > 0 {
+				return domain.Entity{}, fmt.Errorf("task %s is owned by an active run; use v2 run or cancel", domain.DisplayID(current.ID))
+			}
+		}
+		current.Status = status
+		if status == domain.StatusCompleted {
+			finishedAt := s.now()
+			current.FinishedAt = &finishedAt
+		} else {
+			current.FinishedAt = nil
+		}
+	}
+	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.Priority == nil {
+		return domain.Entity{}, errors.New("v2 update requires at least one field")
+	}
+	current.UpdatedAt = s.now()
+	current.Revision++
+	if err := current.Validate(); err != nil {
+		return domain.Entity{}, err
+	}
+	tags, properties, err := encodeMetadata(current)
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("begin v2 entity update: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, status=?, priority=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+		current.Title, current.Body, current.Heading, tags, properties, current.Status, current.Priority,
+		formatTime(current.UpdatedAt), formatOptionalTime(current.FinishedAt), current.Revision,
+		current.ID, current.WorkspaceID, current.Revision-1)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("update v2 entity: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("read v2 update result: %w", err)
+	}
+	if count != 1 {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s changed concurrently", domain.DisplayID(current.ID))
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.updated", current.ID+":updated:"+fmt.Sprint(current.Revision), current.ID, current.Revision, current, current.UpdatedAt); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Entity{}, fmt.Errorf("commit v2 entity update: %w", err)
+	}
+	return current, nil
 }
 
 func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, status domain.Status, expectedRevision int64) (domain.Entity, error) {
@@ -643,6 +762,94 @@ func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, s
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Entity{}, fmt.Errorf("commit v2 task status: %w", err)
+	}
+	return current, nil
+}
+
+func (s *Store) Delete(ctx context.Context, prefix, workspaceID string, expectedRevision int64) (domain.Entity, error) {
+	current, err := s.Get(ctx, prefix, workspaceID)
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	if expectedRevision != 0 && expectedRevision != current.Revision {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), expectedRevision, current.Revision)
+	}
+	if current.IsTask() {
+		var activeRuns int
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE task_id=? AND status IN (?, ?, ?)", current.ID, domain.RunStatusQueued, domain.RunStatusRunning, domain.RunStatusReview).Scan(&activeRuns); err != nil {
+			return domain.Entity{}, fmt.Errorf("check active v2 runs: %w", err)
+		}
+		if activeRuns > 0 {
+			return domain.Entity{}, fmt.Errorf("task %s is owned by an active run; use v2 run or cancel", domain.DisplayID(current.ID))
+		}
+	}
+	now := s.now()
+	current.DeletedAt = &now
+	current.UpdatedAt = now
+	current.Revision++
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("begin v2 tombstone: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET deleted_at=?, updated_at=?, revision=? WHERE id=? AND workspace_id=? AND deleted_at IS NULL AND revision=?`,
+		formatTime(now), formatTime(now), current.Revision, current.ID, workspaceID, current.Revision-1)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("tombstone v2 entity: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("read v2 tombstone result: %w", err)
+	}
+	if count != 1 {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s changed concurrently", domain.DisplayID(current.ID))
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.deleted", current.ID+":deleted:"+fmt.Sprint(current.Revision), current.ID, current.Revision, current, now); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Entity{}, fmt.Errorf("commit v2 tombstone: %w", err)
+	}
+	return current, nil
+}
+
+func (s *Store) Restore(ctx context.Context, prefix, workspaceID string, expectedRevision int64) (domain.Entity, error) {
+	current, err := s.GetIncludingDeleted(ctx, prefix, workspaceID)
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	if current.DeletedAt == nil {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s is not deleted", domain.DisplayID(current.ID))
+	}
+	if expectedRevision != 0 && expectedRevision != current.Revision {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), expectedRevision, current.Revision)
+	}
+	now := s.now()
+	current.DeletedAt = nil
+	current.UpdatedAt = now
+	current.Revision++
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("begin v2 restore: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET deleted_at=NULL, updated_at=?, revision=? WHERE id=? AND workspace_id=? AND deleted_at IS NOT NULL AND revision=?`,
+		formatTime(now), current.Revision, current.ID, workspaceID, current.Revision-1)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("restore v2 entity: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("read v2 restore result: %w", err)
+	}
+	if count != 1 {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s changed concurrently", domain.DisplayID(current.ID))
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.restored", current.ID+":restored:"+fmt.Sprint(current.Revision), current.ID, current.Revision, current, now); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Entity{}, fmt.Errorf("commit v2 restore: %w", err)
 	}
 	return current, nil
 }

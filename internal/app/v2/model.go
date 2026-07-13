@@ -17,6 +17,9 @@ import (
 type Service interface {
 	Create(context.Context, domain.Entity) (domain.Entity, error)
 	Get(context.Context, string) (domain.Entity, error)
+	Update(context.Context, string, domain.Update) (domain.Entity, error)
+	Delete(context.Context, string, int64) (domain.Entity, error)
+	Restore(context.Context, string, int64) (domain.Entity, error)
 	List(context.Context, domain.ListOptions) ([]domain.Entity, error)
 	Links(context.Context, string) ([]domain.Link, error)
 	QueueRun(context.Context, string, string, string, domain.PermissionPolicy) (domain.Run, error)
@@ -46,6 +49,9 @@ const (
 	inputNone inputMode = iota
 	inputCapture
 	inputSearch
+	inputEditTitle
+	inputEditBody
+	inputDeleteConfirm
 )
 
 const statusTTL = 2500 * time.Millisecond
@@ -72,6 +78,7 @@ type Model struct {
 	inputMode      inputMode
 	captureKind    domain.Kind
 	input          textinput.Model
+	editRevision   int64
 	query          string
 	help           bool
 	width          int
@@ -160,6 +167,14 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startCapture(domain.KindTask)
 	case "n":
 		m.startCapture(domain.KindNote)
+	case "e":
+		m.startEdit(inputEditTitle)
+	case "E":
+		m.startEdit(inputEditBody)
+	case "d":
+		m.startDelete()
+	case "u":
+		return m.restoreSelected()
 	case "q":
 		if m.activeView == viewWorkspace {
 			return m.queueSelected()
@@ -185,6 +200,21 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.inputMode == inputDeleteConfirm {
+		switch msg.String() {
+		case "y", "Y":
+			return m.confirmDelete()
+		case "n", "N", "esc":
+			m.inputMode = inputNone
+			return m.setStatus("Delete canceled.")
+		default:
+			return m, nil
+		}
+	}
+	if (m.inputMode == inputEditTitle || m.inputMode == inputEditBody) && msg.String() == "ctrl+a" {
+		m.input.SetValue("")
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.inputMode = inputNone
@@ -192,8 +222,8 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		return m, nil
 	case "enter":
-		value := strings.TrimSpace(m.input.Value())
 		if m.inputMode == inputSearch {
+			value := strings.TrimSpace(m.input.Value())
 			m.query = value
 			m.inputMode = inputNone
 			m.input.Blur()
@@ -202,6 +232,33 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.setStatus(searchStatus(value))
 		}
+		if m.inputMode == inputEditTitle || m.inputMode == inputEditBody {
+			value := m.input.Value()
+			if m.inputMode == inputEditTitle {
+				value = strings.TrimSpace(value)
+				if value == "" {
+					return m.setStatus("Edit needs a title.")
+				}
+			}
+			update := domain.Update{ExpectedRevision: m.editRevision}
+			if m.inputMode == inputEditTitle {
+				update.Title = &value
+			} else {
+				update.Body = &value
+			}
+			entity, err := m.service.Update(context.Background(), m.selectedID(), update)
+			if err != nil {
+				return m.setStatus(err.Error())
+			}
+			m.inputMode = inputNone
+			m.input.Blur()
+			m.input.SetValue("")
+			if err := m.reloadKeeping(entity.ID); err != nil {
+				return m.setStatus(err.Error())
+			}
+			return m.setStatus(fmt.Sprintf("Updated %s.", domain.DisplayID(entity.ID)))
+		}
+		value := strings.TrimSpace(m.input.Value())
 		if value == "" {
 			return m.setStatus("Capture needs a title.")
 		}
@@ -241,6 +298,84 @@ func (m *Model) startCapture(kind domain.Kind) {
 	m.input.SetValue("")
 	m.input.Focus()
 	m.help = false
+}
+
+func (m *Model) startEdit(field inputMode) {
+	entity := m.currentEntity()
+	if entity == nil {
+		m.setStatus("Select a note or task to edit.")
+		return
+	}
+	if entity.DeletedAt != nil {
+		m.setStatus("Restore the tombstone before editing.")
+		return
+	}
+	m.inputMode = field
+	m.editRevision = entity.Revision
+	m.input.Prompt = "> "
+	if field == inputEditBody {
+		m.input.Placeholder = "edit body..."
+		m.input.SetValue(entity.Body)
+	} else {
+		m.input.Placeholder = "edit title..."
+		m.input.SetValue(entity.Title)
+	}
+	m.input.CursorEnd()
+	m.input.Focus()
+	m.help = false
+}
+
+func (m *Model) startDelete() {
+	entity := m.currentEntity()
+	if entity == nil {
+		m.setStatus("Select a note or task to delete.")
+		return
+	}
+	if entity.DeletedAt != nil {
+		m.setStatus("Item is already deleted; press u to restore it.")
+		return
+	}
+	m.inputMode = inputDeleteConfirm
+	m.editRevision = entity.Revision
+	m.input.Blur()
+	m.help = false
+}
+
+func (m Model) confirmDelete() (tea.Model, tea.Cmd) {
+	entity := m.currentEntity()
+	if entity == nil {
+		return m.setStatus("Select a note or task to delete.")
+	}
+	deleted, err := m.service.Delete(context.Background(), entity.ID, m.editRevision)
+	if err != nil {
+		return m.setStatus(err.Error())
+	}
+	m.inputMode = inputNone
+	if err := m.reloadKeeping(deleted.ID); err != nil {
+		return m.setStatus(err.Error())
+	}
+	return m.setStatus("Tombstoned " + domain.DisplayID(deleted.ID) + ". Press u to restore.")
+}
+
+func (m Model) restoreSelected() (tea.Model, tea.Cmd) {
+	if m.activeView != viewWorkspace {
+		return m.setStatus("Restore is available from the workspace view.")
+	}
+	entity := m.currentEntity()
+	if entity == nil {
+		return m.setStatus("Select a tombstone to restore.")
+	}
+	if entity.DeletedAt == nil {
+		return m.setStatus("Selected item is not deleted.")
+	}
+	restored, err := m.service.Restore(context.Background(), entity.ID, entity.Revision)
+	if err != nil {
+		return m.setStatus(err.Error())
+	}
+	if err := m.reloadKeeping(restored.ID); err != nil {
+		return m.setStatus(err.Error())
+	}
+	return m.setStatus("Restored " + domain.DisplayID(restored.ID) + ".")
 }
 
 func (m *Model) switchView(next view) {
@@ -316,7 +451,7 @@ func (m *Model) reload() error {
 }
 
 func (m *Model) reloadKeeping(keepID string) error {
-	entities, err := m.service.List(context.Background(), domain.ListOptions{Project: m.project, Query: m.query})
+	entities, err := m.service.List(context.Background(), domain.ListOptions{Project: m.project, Query: m.query, IncludeDeleted: true})
 	if err != nil {
 		return fmt.Errorf("load v2 workspace: %w", err)
 	}
@@ -469,6 +604,10 @@ func (m Model) renderBody(width, height int) string {
 			"1-4           switch workspace, runs, artifacts, sync",
 			"a             capture a task",
 			"n             capture a note",
+			"e             edit selected title",
+			"E             edit selected body",
+			"d             delete selected item",
+			"u             restore selected tombstone",
 			"/             search workspace",
 			"q             queue selected task",
 			"x             execute selected queued run",
@@ -526,7 +665,7 @@ func (m Model) renderSync(width, height int) string {
 		"",
 		"SQLite is authoritative while offline.",
 		"Auth, push, and pull are not configured yet.",
-		"Authored notes/tasks are immutable; capture a new item to revise.",
+		"Edits are revision-checked; deletes create reversible tombstones.",
 	}
 	if len(m.conflicts) > 0 {
 		lines = append(lines, "", "CONFLICTS")
@@ -553,6 +692,9 @@ func (m Model) renderEntityList() []string {
 			kind = "task"
 			status = string(entity.Status)
 		}
+		if entity.DeletedAt != nil {
+			status = "deleted"
+		}
 		line := fmt.Sprintf("%s %-4s %-9s %-8s %s", marker, domain.DisplayID(entity.ID), kind, status, entity.Title)
 		lines = append(lines, line)
 	}
@@ -571,6 +713,10 @@ func (m Model) renderEntityDetail(width, height int) []string {
 		strings.ToUpper(string(entity.Kind)) + "  " + entity.ID,
 		"status: " + statusOrNote(*entity),
 		fmt.Sprintf("revision: %d", entity.Revision),
+	}
+	if entity.DeletedAt != nil {
+		lines[1] = "status: deleted (reversible tombstone)"
+		lines = append(lines, "deleted: "+entity.DeletedAt.UTC().Format(time.RFC3339))
 	}
 	if entity.Project != "" {
 		lines = append(lines, "project: "+entity.Project)
@@ -689,10 +835,16 @@ func (m Model) renderFooter(width int) string {
 		text = m.input.View() + "  enter capture · esc cancel"
 	} else if m.inputMode == inputSearch {
 		text = m.input.View() + "  enter search · esc cancel"
+	} else if m.inputMode == inputEditTitle {
+		text = m.input.View() + "  enter save title · esc cancel"
+	} else if m.inputMode == inputEditBody {
+		text = m.input.View() + "  enter save body · esc cancel"
+	} else if m.inputMode == inputDeleteConfirm {
+		text = "Tombstone selected item? y confirm · n/esc cancel"
 	} else if m.status != "" {
 		text = m.status
 	} else {
-		text = "j/k move · 1-4 views · a task · n note · / search · ? help · Q quit"
+		text = "j/k move · 1-4 views · a task · n note · e/E edit · d delete · u restore · / search · ? help · Q quit"
 		if m.activeView == viewWorkspace {
 			text += " · q queue"
 		}

@@ -107,6 +107,71 @@ func TestSetTaskStatusUsesOptimisticRevisionAndStatusTimestamps(t *testing.T) {
 	}
 }
 
+func TestUpdateEditsAuthoredFieldsAndRecordsRevision(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "before", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "after"
+	body := "new body"
+	updated, err := store.Update(ctx, note.ID, "local", domain.Update{ExpectedRevision: 1, Title: &title, Body: &body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Title != title || updated.Body != body || updated.Revision != 2 {
+		t.Fatalf("updated = %#v", updated)
+	}
+	changes, err := store.ListChanges(ctx, "local", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 || changes[1].Kind != "entity.updated" || changes[1].Revision != 2 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if _, err := store.Update(ctx, note.ID, "local", domain.Update{ExpectedRevision: 1, Title: &title}); err == nil || !strings.Contains(err.Error(), "revision conflict") {
+		t.Fatalf("stale edit should conflict: %v", err)
+	}
+}
+
+func TestDeleteAndRestoreUseReversibleTombstones(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "keep me", Body: "preserve this"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.Delete(ctx, note.ID, "local", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.DeletedAt == nil || deleted.Revision != 2 {
+		t.Fatalf("deleted = %#v", deleted)
+	}
+	if _, err := store.Get(ctx, note.ID, "local"); err == nil {
+		t.Fatal("tombstoned item should be hidden from normal get")
+	}
+	withDeleted, err := store.GetIncludingDeleted(ctx, note.ID, "local")
+	if err != nil || withDeleted.DeletedAt == nil || withDeleted.Body != note.Body {
+		t.Fatalf("tombstone = %#v, err=%v", withDeleted, err)
+	}
+	restored, err := store.Restore(ctx, note.ID, "local", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.DeletedAt != nil || restored.Revision != 3 || restored.Title != note.Title || restored.Body != note.Body {
+		t.Fatalf("restored = %#v", restored)
+	}
+	changes, err := store.ListChanges(ctx, "local", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 3 || changes[1].Kind != "entity.deleted" || changes[2].Kind != "entity.restored" {
+		t.Fatalf("changes = %#v", changes)
+	}
+}
+
 func TestSyncStatusAndConflictsAreVisibleWithoutMutatingEntities(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

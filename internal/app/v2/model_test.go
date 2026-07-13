@@ -130,6 +130,48 @@ func TestModelCaptureQueueRunAndInspectArtifactFlow(t *testing.T) {
 	}
 }
 
+func TestModelEditsAndConfirmsReversibleTombstones(t *testing.T) {
+	model, _ := testModel(t)
+	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("original title")})
+	model = press(model, tea.KeyMsg{Type: tea.KeyEnter})
+
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	model = press(model, tea.KeyMsg{Type: tea.KeyCtrlA})
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("edited title")})
+	model = press(model, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(model.entities) != 1 || model.entities[0].Title != "edited title" || model.entities[0].Revision != 2 {
+		t.Fatalf("edited entity = %#v", model.entities)
+	}
+
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'E'}})
+	model = press(model, tea.KeyMsg{Type: tea.KeyCtrlA})
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("edited body")})
+	model = press(model, tea.KeyMsg{Type: tea.KeyEnter})
+	if model.entities[0].Body != "edited body" || model.entities[0].Revision != 3 {
+		t.Fatalf("edited body entity = %#v", model.entities[0])
+	}
+
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if !strings.Contains(model.View(), "Tombstone selected item?") {
+		t.Fatalf("delete confirmation missing:\n%s", model.View())
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if model.entities[0].DeletedAt != nil {
+		t.Fatal("delete cancellation changed entity")
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if model.entities[0].DeletedAt == nil || !strings.Contains(model.View(), "reversible tombstone") {
+		t.Fatalf("tombstoned entity = %#v\n%s", model.entities, model.View())
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	if model.entities[0].DeletedAt != nil || model.entities[0].Title != "edited title" {
+		t.Fatalf("restored entity = %#v", model.entities[0])
+	}
+}
+
 func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 	model, service := testModel(t)
 	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
@@ -167,7 +209,7 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "Authored notes/tasks are immutable") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
 		t.Fatalf("sync view =\n%s", model.View())
 	}
 }
