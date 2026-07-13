@@ -27,6 +27,8 @@ type Service interface {
 	Artifacts(context.Context, string) ([]domain.Artifact, error)
 	AllArtifacts(context.Context) ([]domain.Artifact, error)
 	ReadArtifact(context.Context, string) (domain.Artifact, []byte, error)
+	SyncStatus(context.Context) (domain.SyncStatus, error)
+	Conflicts(context.Context) ([]domain.Conflict, error)
 }
 
 type view int
@@ -62,6 +64,8 @@ type Model struct {
 	artifacts []domain.Artifact
 	links     []domain.Link
 	events    []domain.RunEvent
+	sync      domain.SyncStatus
+	conflicts []domain.Conflict
 
 	selected       int
 	activeView     view
@@ -324,6 +328,14 @@ func (m *Model) reloadKeeping(keepID string) error {
 	if err != nil {
 		return fmt.Errorf("load v2 artifacts: %w", err)
 	}
+	syncStatus, err := m.service.SyncStatus(context.Background())
+	if err != nil {
+		return fmt.Errorf("load v2 sync status: %w", err)
+	}
+	conflicts, err := m.service.Conflicts(context.Background())
+	if err != nil {
+		return fmt.Errorf("load v2 sync conflicts: %w", err)
+	}
 	if m.project != "" {
 		projectTasks, err := m.service.List(context.Background(), domain.ListOptions{Project: m.project, Kind: domain.KindTask})
 		if err != nil {
@@ -353,6 +365,8 @@ func (m *Model) reloadKeeping(keepID string) error {
 	m.entities = entities
 	m.runs = runs
 	m.artifacts = artifacts
+	m.sync = syncStatus
+	m.conflicts = conflicts
 	m.selected = indexForID(m.currentIDs(), keepID)
 	m.detailError = ""
 	m.artifactBody = ""
@@ -502,16 +516,25 @@ func (m Model) renderArtifacts(width, height int) string {
 }
 
 func (m Model) renderSync(width, height int) string {
-	return strings.Join(fitLines([]string{
-		"LOCAL WORKSPACE",
+	lines := []string{
+		"LOCAL SYNC",
 		"",
-		"Sync is not connected in Slice 4.",
+		"remote: " + m.sync.RemoteState,
+		fmt.Sprintf("local cursor: %d", m.sync.LocalCursor),
+		fmt.Sprintf("pending changes: %d", m.sync.PendingChanges),
+		fmt.Sprintf("open conflicts: %d", m.sync.OpenConflicts),
 		"",
 		"SQLite is authoritative while offline.",
-		"Revision-aware sync and visible conflicts arrive in Slice 5.",
-		"",
-		"No remote state is being implied or overwritten.",
-	}, width, height), "\n")
+		"Auth, push, and pull are not configured yet.",
+		"Authored notes/tasks are immutable; capture a new item to revise.",
+	}
+	if len(m.conflicts) > 0 {
+		lines = append(lines, "", "CONFLICTS")
+		for _, conflict := range m.conflicts {
+			lines = append(lines, fmt.Sprintf("%s  %s  entity %s  local %d / remote %d", domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision))
+		}
+	}
+	return strings.Join(fitLines(lines, width, height), "\n")
 }
 
 func (m Model) renderEntityList() []string {

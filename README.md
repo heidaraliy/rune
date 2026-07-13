@@ -74,13 +74,18 @@ rune v2 cancel <run-id>
 rune v2 runs
 rune v2 artifacts <run-id>
 rune v2 artifact <artifact-id>
+rune v2 sync
 rune v2 tui --project rune
 ```
 
 The Rune 2 TUI is a separate client over the structured store. Use `1`-`4` to
 switch workspace, runs, artifacts, and local sync status; `a`/`n` capture;
 `q` queues a task; `x` executes a run; `c` cancels it; `/` searches; and `Q`
-quits.
+quits. Rune 2 notes and tasks are append-only: authored fields cannot be edited
+or deleted. Capture a new item and link it when an idea needs revision. Task
+status changes remain available as lifecycle transitions owned by status, queue,
+run, and cancel operations. `rune v2 sync` reports the local change cursor,
+pending changes, and visible conflicts; hosted sync is not configured yet.
 
 For notes that should travel with a repository, initialize a project-local
 store:
@@ -141,7 +146,7 @@ rune init [--project lune]
 rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
-  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|tui|import> ...
+  rune v2 <init|capture|list|show|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync|tui|import> ...
 ```
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can

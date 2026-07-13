@@ -133,7 +133,8 @@ func TestModelCaptureQueueRunAndInspectArtifactFlow(t *testing.T) {
 func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 	model, service := testModel(t)
 	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
-	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindNote, Project: "rune", Title: "searchable note"}); err != nil {
+	note, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindNote, Project: "rune", Title: "searchable note"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindTask, Project: "rune", Title: "other task", Status: domain.StatusDraft}); err != nil {
@@ -152,8 +153,21 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 	if !strings.Contains(model.View(), "Rune 2 keyboard guide") || !strings.Contains(model.View(), "queue selected task") {
 		t.Fatalf("help view =\n%s", model.View())
 	}
+	if _, err := service.RecordConflict(context.Background(), domain.Conflict{
+		EntityID:       note.ID,
+		Kind:           "entity.created",
+		LocalRevision:  1,
+		RemoteRevision: 1,
+		LocalPayload:   `{"title":"searchable note"}`,
+		RemotePayload:  `{"title":"remote note"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.reload(); err != nil {
+		t.Fatal(err)
+	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "Sync is not connected in Slice 4") || !strings.Contains(model.View(), "Slice 5") {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "Authored notes/tasks are immutable") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
 		t.Fatalf("sync view =\n%s", model.View())
 	}
 }

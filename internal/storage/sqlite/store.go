@@ -168,16 +168,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		version = 1
 	}
-	if version >= 2 {
-		return nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin run schema migration: %w", err)
-	}
-	defer tx.Rollback()
-	statements := []string{
-		`CREATE TABLE runs (
+	if version < 2 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin run schema migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`CREATE TABLE runs (
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL,
 			task_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
@@ -194,9 +192,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 			finished_at TEXT,
 			revision INTEGER NOT NULL DEFAULT 1
 		)`,
-		`CREATE INDEX runs_workspace_created ON runs(workspace_id, created_at DESC)`,
-		`CREATE INDEX runs_workspace_task ON runs(workspace_id, task_id, created_at DESC)`,
-		`CREATE TABLE run_events (
+			`CREATE INDEX runs_workspace_created ON runs(workspace_id, created_at DESC)`,
+			`CREATE INDEX runs_workspace_task ON runs(workspace_id, task_id, created_at DESC)`,
+			`CREATE TABLE run_events (
 			id TEXT PRIMARY KEY,
 			run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
 			sequence INTEGER NOT NULL,
@@ -205,8 +203,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			UNIQUE(run_id, sequence)
 		)`,
-		`CREATE INDEX run_events_run_sequence ON run_events(run_id, sequence ASC)`,
-		`CREATE TABLE artifacts (
+			`CREATE INDEX run_events_run_sequence ON run_events(run_id, sequence ASC)`,
+			`CREATE TABLE artifacts (
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL,
 			run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
@@ -222,25 +220,243 @@ func (s *Store) Migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			revision INTEGER NOT NULL DEFAULT 1
 		)`,
-		`CREATE INDEX artifacts_workspace_created ON artifacts(workspace_id, created_at DESC)`,
-		`CREATE INDEX artifacts_run_created ON artifacts(run_id, created_at ASC)`,
-		`INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)`,
+			`CREATE INDEX artifacts_workspace_created ON artifacts(workspace_id, created_at DESC)`,
+			`CREATE INDEX artifacts_run_created ON artifacts(run_id, created_at ASC)`,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)`,
+		}
+		for index, statement := range statements {
+			if index == len(statements)-1 {
+				if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("apply run schema migration %d: %w", index+1, err)
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply run schema migration %d: %w", index+1, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit run schema migration: %w", err)
+		}
+		version = 2
+	}
+	if version >= 3 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sync schema migration: %w", err)
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE sync_changes (
+			cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+			id TEXT NOT NULL UNIQUE,
+			workspace_id TEXT NOT NULL,
+			operation_id TEXT NOT NULL UNIQUE,
+			actor_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			entity_id TEXT NOT NULL DEFAULT '',
+			revision INTEGER NOT NULL,
+			payload TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX sync_changes_workspace_cursor ON sync_changes(workspace_id, cursor ASC)`,
+		`CREATE INDEX sync_changes_workspace_entity ON sync_changes(workspace_id, entity_id, cursor ASC)`,
+		`CREATE TABLE sync_conflicts (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			entity_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			local_revision INTEGER NOT NULL,
+			remote_revision INTEGER NOT NULL,
+			local_payload TEXT NOT NULL,
+			remote_payload TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('open')),
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX sync_conflicts_workspace_status ON sync_conflicts(workspace_id, status, created_at ASC)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)`,
 	}
 	for index, statement := range statements {
 		if index == len(statements)-1 {
 			if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
-				return fmt.Errorf("apply run schema migration %d: %w", index+1, err)
+				return fmt.Errorf("apply sync schema migration %d: %w", index+1, err)
 			}
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply run schema migration %d: %w", index+1, err)
+			return fmt.Errorf("apply sync schema migration %d: %w", index+1, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit run schema migration: %w", err)
+		return fmt.Errorf("commit sync schema migration: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) recordChangeTx(ctx context.Context, tx *sql.Tx, workspaceID, kind, operationID, entityID string, revision int64, payload any, createdAt time.Time) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode sync change %s: %w", kind, err)
+	}
+	changeID, err := domain.NewID()
+	if err != nil {
+		return err
+	}
+	change := domain.Change{
+		ID:          changeID,
+		WorkspaceID: workspaceID,
+		OperationID: operationID,
+		ActorID:     "local",
+		DeviceID:    "local-device",
+		Kind:        kind,
+		EntityID:    entityID,
+		Revision:    revision,
+		Payload:     string(encoded),
+		CreatedAt:   createdAt,
+	}
+	if change.CreatedAt.IsZero() {
+		change.CreatedAt = s.now()
+	}
+	if err := change.Validate(); err != nil {
+		return err
+	}
+	exec := func(query string, args ...any) (sql.Result, error) {
+		if tx != nil {
+			return tx.ExecContext(ctx, query, args...)
+		}
+		return s.db.ExecContext(ctx, query, args...)
+	}
+	if _, err := exec(`INSERT INTO sync_changes(
+		id, workspace_id, operation_id, actor_id, device_id, kind, entity_id,
+		revision, payload, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		change.ID, change.WorkspaceID, change.OperationID, change.ActorID, change.DeviceID,
+		change.Kind, change.EntityID, change.Revision, change.Payload, formatTime(change.CreatedAt)); err != nil {
+		return fmt.Errorf("record sync change %s: %w", kind, err)
+	}
+	return nil
+}
+
+func (s *Store) ListChanges(ctx context.Context, workspaceID string, afterCursor int64, limit int) ([]domain.Change, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT cursor, id, workspace_id, operation_id, actor_id,
+		device_id, kind, entity_id, revision, payload, created_at
+		FROM sync_changes WHERE workspace_id=? AND cursor>? ORDER BY cursor ASC LIMIT ?`, workspaceID, afterCursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list v2 sync changes: %w", err)
+	}
+	defer rows.Close()
+	changes := make([]domain.Change, 0)
+	for rows.Next() {
+		var change domain.Change
+		var created string
+		if err := rows.Scan(&change.Cursor, &change.ID, &change.WorkspaceID, &change.OperationID,
+			&change.ActorID, &change.DeviceID, &change.Kind, &change.EntityID, &change.Revision,
+			&change.Payload, &created); err != nil {
+			return nil, fmt.Errorf("scan v2 sync change: %w", err)
+		}
+		change.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read v2 sync changes: %w", err)
+	}
+	return changes, nil
+}
+
+func (s *Store) RecordConflict(ctx context.Context, conflict domain.Conflict) (domain.Conflict, error) {
+	if conflict.ID == "" {
+		var err error
+		conflict.ID, err = domain.NewID()
+		if err != nil {
+			return domain.Conflict{}, err
+		}
+	}
+	if conflict.Status == "" {
+		conflict.Status = "open"
+	}
+	if conflict.CreatedAt.IsZero() {
+		conflict.CreatedAt = s.now()
+	}
+	if err := conflict.Validate(); err != nil {
+		return domain.Conflict{}, err
+	}
+	var entityWorkspace string
+	if err := s.db.QueryRowContext(ctx, "SELECT workspace_id FROM entities WHERE id=?", conflict.EntityID).Scan(&entityWorkspace); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Conflict{}, fmt.Errorf("conflict entity %s does not exist", conflict.EntityID)
+		}
+		return domain.Conflict{}, fmt.Errorf("check conflict entity: %w", err)
+	}
+	if entityWorkspace != conflict.WorkspaceID {
+		return domain.Conflict{}, fmt.Errorf("conflict entity belongs to workspace %s, not %s", entityWorkspace, conflict.WorkspaceID)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sync_conflicts(
+		id, workspace_id, entity_id, kind, local_revision, remote_revision,
+		local_payload, remote_payload, status, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, conflict.ID, conflict.WorkspaceID, conflict.EntityID,
+		conflict.Kind, conflict.LocalRevision, conflict.RemoteRevision, conflict.LocalPayload,
+		conflict.RemotePayload, conflict.Status, formatTime(conflict.CreatedAt))
+	if err != nil {
+		return domain.Conflict{}, fmt.Errorf("record v2 sync conflict: %w", err)
+	}
+	return conflict, nil
+}
+
+func (s *Store) ListConflicts(ctx context.Context, workspaceID string) ([]domain.Conflict, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, entity_id, kind,
+		local_revision, remote_revision, local_payload, remote_payload, status, created_at
+		FROM sync_conflicts WHERE workspace_id=? AND status='open' ORDER BY created_at ASC, id ASC`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list v2 sync conflicts: %w", err)
+	}
+	defer rows.Close()
+	conflicts := make([]domain.Conflict, 0)
+	for rows.Next() {
+		var conflict domain.Conflict
+		var created string
+		if err := rows.Scan(&conflict.ID, &conflict.WorkspaceID, &conflict.EntityID, &conflict.Kind,
+			&conflict.LocalRevision, &conflict.RemoteRevision, &conflict.LocalPayload,
+			&conflict.RemotePayload, &conflict.Status, &created); err != nil {
+			return nil, fmt.Errorf("scan v2 sync conflict: %w", err)
+		}
+		conflict.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		conflicts = append(conflicts, conflict)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read v2 sync conflicts: %w", err)
+	}
+	return conflicts, nil
+}
+
+func (s *Store) SyncStatus(ctx context.Context, workspaceID string) (domain.SyncStatus, error) {
+	var status domain.SyncStatus
+	status.WorkspaceID = workspaceID
+	status.RemoteState = "not-configured"
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(cursor), 0) FROM sync_changes WHERE workspace_id=?", workspaceID).Scan(&status.LocalCursor); err != nil {
+		return domain.SyncStatus{}, fmt.Errorf("read v2 sync cursor: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_changes WHERE workspace_id=?", workspaceID).Scan(&status.PendingChanges); err != nil {
+		return domain.SyncStatus{}, fmt.Errorf("count v2 pending changes: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_conflicts WHERE workspace_id=? AND status='open'", workspaceID).Scan(&status.OpenConflicts); err != nil {
+		return domain.SyncStatus{}, fmt.Errorf("count v2 open conflicts: %w", err)
+	}
+	return status, nil
 }
 
 func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity, error) {
@@ -255,7 +471,12 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 	if err := s.validateEntityReferences(ctx, entity); err != nil {
 		return domain.Entity{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("begin v2 entity create: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO entities(
 			id, kind, workspace_id, project, title, body, heading, tags_json,
 			properties_json, status, priority, parent_id, source_note_id,
@@ -269,6 +490,12 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 		entity.Revision, formatOptionalTime(entity.DeletedAt))
 	if err != nil {
 		return domain.Entity{}, fmt.Errorf("create %s %s: %w", entity.Kind, entity.ID, err)
+	}
+	if err := s.recordChangeTx(ctx, tx, entity.WorkspaceID, "entity.created", entity.ID+":created:"+fmt.Sprint(entity.Revision), entity.ID, entity.Revision, entity, entity.CreatedAt); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Entity{}, fmt.Errorf("commit v2 entity create: %w", err)
 	}
 	return entity, nil
 }
@@ -349,85 +576,73 @@ func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 	return entities, nil
 }
 
-func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update domain.Update) (domain.Entity, error) {
+func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, status domain.Status, expectedRevision int64) (domain.Entity, error) {
 	current, err := s.Get(ctx, prefix, workspaceID)
 	if err != nil {
 		return domain.Entity{}, err
 	}
-	if update.ExpectedRevision != 0 && update.ExpectedRevision != current.Revision {
-		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), update.ExpectedRevision, current.Revision)
+	if expectedRevision != 0 && expectedRevision != current.Revision {
+		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), expectedRevision, current.Revision)
 	}
-	if update.Title != nil {
-		current.Title = strings.TrimSpace(*update.Title)
+	if !current.IsTask() {
+		return domain.Entity{}, errors.New("notes cannot have task status")
 	}
-	if update.Body != nil {
-		current.Body = *update.Body
+	status, err = domain.NormalizeStatus(string(status))
+	if err != nil {
+		return domain.Entity{}, err
 	}
-	if update.AppendBody != nil {
-		if current.Body != "" && !strings.HasSuffix(current.Body, "\n") {
-			current.Body += "\n"
+	if status == "" {
+		status = domain.StatusDraft
+	}
+	if status != current.Status {
+		var activeRuns int
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE task_id=? AND status IN (?, ?, ?)", current.ID, domain.RunStatusQueued, domain.RunStatusRunning, domain.RunStatusReview).Scan(&activeRuns); err != nil {
+			return domain.Entity{}, fmt.Errorf("check active v2 runs: %w", err)
 		}
-		current.Body += *update.AppendBody
+		if activeRuns > 0 {
+			return domain.Entity{}, fmt.Errorf("task %s is owned by an active run; use v2 run or cancel", domain.DisplayID(current.ID))
+		}
 	}
-	if update.Heading != nil {
-		current.Heading = strings.TrimSpace(*update.Heading)
-	}
-	if update.Tags != nil {
-		current.Tags = domain.NormalizeTags(*update.Tags)
-	}
-	if update.Priority != nil {
-		current.Priority = *update.Priority
-	}
-	if update.Status != nil {
-		status, err := domain.NormalizeStatus(string(*update.Status))
-		if err != nil {
-			return domain.Entity{}, err
-		}
-		if !current.IsTask() {
-			return domain.Entity{}, errors.New("notes cannot have task status")
-		}
-		if status == "" {
-			status = domain.StatusDraft
-		}
-		if status != current.Status {
-			var activeRuns int
-			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE task_id=? AND status IN (?, ?, ?)", current.ID, domain.RunStatusQueued, domain.RunStatusRunning, domain.RunStatusReview).Scan(&activeRuns); err != nil {
-				return domain.Entity{}, fmt.Errorf("check active v2 runs: %w", err)
-			}
-			if activeRuns > 0 {
-				return domain.Entity{}, fmt.Errorf("task %s is owned by an active run; use v2 run or cancel", domain.DisplayID(current.ID))
-			}
-		}
-		current.Status = status
-		if status == domain.StatusCompleted {
-			finishedAt := s.now()
-			current.FinishedAt = &finishedAt
-		} else {
-			current.FinishedAt = nil
-		}
+	current.Status = status
+	if status == domain.StatusCompleted {
+		finishedAt := s.now()
+		current.FinishedAt = &finishedAt
+	} else {
+		current.FinishedAt = nil
 	}
 	current.UpdatedAt = s.now()
 	current.Revision++
 	if err := current.Validate(); err != nil {
 		return domain.Entity{}, err
 	}
-	tags, properties, err := encodeMetadata(current)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Entity{}, err
+		return domain.Entity{}, fmt.Errorf("begin v2 task status: %w", err)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, status=?, priority=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
-		current.Title, current.Body, current.Heading, tags, properties, current.Status, current.Priority,
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+		current.Status,
 		formatTime(current.UpdatedAt), formatOptionalTime(current.FinishedAt), current.Revision,
 		current.ID, current.WorkspaceID, current.Revision-1)
 	if err != nil {
-		return domain.Entity{}, fmt.Errorf("update v2 entity: %w", err)
+		return domain.Entity{}, fmt.Errorf("update v2 task status: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return domain.Entity{}, fmt.Errorf("read v2 update result: %w", err)
+		return domain.Entity{}, fmt.Errorf("read v2 task status result: %w", err)
 	}
 	if count != 1 {
 		return domain.Entity{}, fmt.Errorf("v2 entity %s changed concurrently", domain.DisplayID(current.ID))
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.status", current.ID+":status:"+fmt.Sprint(current.Revision), current.ID, current.Revision, map[string]any{
+		"entity_id": current.ID,
+		"status":    current.Status,
+		"revision":  current.Revision,
+	}, current.UpdatedAt); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Entity{}, fmt.Errorf("commit v2 task status: %w", err)
 	}
 	return current, nil
 }
@@ -456,10 +671,21 @@ func (s *Store) CreateLink(ctx context.Context, link domain.Link) (domain.Link, 
 	if count != 2 {
 		return domain.Link{}, errors.New("link endpoints must exist in the same workspace")
 	}
-	_, err := s.db.ExecContext(ctx, "INSERT INTO links(id, workspace_id, from_id, to_id, kind, created_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Link{}, fmt.Errorf("begin v2 link create: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, "INSERT INTO links(id, workspace_id, from_id, to_id, kind, created_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		link.ID, link.WorkspaceID, link.FromID, link.ToID, link.Kind, formatTime(link.CreatedAt), link.Revision)
 	if err != nil {
 		return domain.Link{}, fmt.Errorf("create v2 link: %w", err)
+	}
+	if err := s.recordChangeTx(ctx, tx, link.WorkspaceID, "link.created", link.ID+":created:"+fmt.Sprint(link.Revision), link.ID, link.Revision, link, link.CreatedAt); err != nil {
+		return domain.Link{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Link{}, fmt.Errorf("commit v2 link create: %w", err)
 	}
 	return link, nil
 }
@@ -553,8 +779,9 @@ func (s *Store) QueueRun(ctx context.Context, run domain.Run, contextArtifact *d
 	}
 	defer tx.Rollback()
 	var taskKind, taskWorkspace, taskStatus string
+	var taskRevision int64
 	var deletedAt sql.NullString
-	if err := tx.QueryRowContext(ctx, "SELECT kind, workspace_id, status, deleted_at FROM entities WHERE id=?", run.TaskID).Scan(&taskKind, &taskWorkspace, &taskStatus, &deletedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT kind, workspace_id, status, revision, deleted_at FROM entities WHERE id=?", run.TaskID).Scan(&taskKind, &taskWorkspace, &taskStatus, &taskRevision, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Run{}, domain.Artifact{}, fmt.Errorf("run task %s does not exist", run.TaskID)
 		}
@@ -592,7 +819,26 @@ func (s *Store) QueueRun(ctx context.Context, run domain.Run, contextArtifact *d
 		}
 		return domain.Run{}, domain.Artifact{}, fmt.Errorf("task %s changed while queueing", domain.DisplayID(run.TaskID))
 	}
-	if err := insertRunEvent(ctx, tx, domain.RunEvent{RunID: run.ID, Sequence: 1, Kind: "status", Payload: string(run.Status)}, run.CreatedAt); err != nil {
+	queuedEvent := domain.RunEvent{RunID: run.ID, Sequence: 1, Kind: "status", Payload: string(run.Status)}
+	if err := insertRunEvent(ctx, tx, queuedEvent, run.CreatedAt); err != nil {
+		return domain.Run{}, domain.Artifact{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, run.WorkspaceID, "run.created", run.ID+":created:"+fmt.Sprint(run.Revision), run.ID, run.Revision, run, run.CreatedAt); err != nil {
+		return domain.Run{}, domain.Artifact{}, err
+	}
+	if contextArtifact != nil {
+		if err := s.recordChangeTx(ctx, tx, artifact.WorkspaceID, "artifact.created", artifact.ID+":created:"+fmt.Sprint(artifact.Revision), artifact.ID, artifact.Revision, artifact, artifact.CreatedAt); err != nil {
+			return domain.Run{}, domain.Artifact{}, err
+		}
+	}
+	if err := s.recordChangeTx(ctx, tx, run.WorkspaceID, "entity.status", run.TaskID+":status:"+fmt.Sprint(taskRevision+1), run.TaskID, taskRevision+1, map[string]any{
+		"entity_id": run.TaskID,
+		"status":    domain.StatusQueued,
+		"revision":  taskRevision + 1,
+	}, updatedAt); err != nil {
+		return domain.Run{}, domain.Artifact{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, run.WorkspaceID, "run.event", run.ID+":event:1", run.ID, 1, queuedEvent, run.CreatedAt); err != nil {
 		return domain.Run{}, domain.Artifact{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -687,7 +933,8 @@ func (s *Store) SetRunStatus(ctx context.Context, prefix, workspaceID string, st
 	}
 	defer tx.Rollback()
 	var taskStatus string
-	if err := tx.QueryRowContext(ctx, "SELECT status FROM entities WHERE id=? AND workspace_id=?", current.TaskID, workspaceID).Scan(&taskStatus); err != nil {
+	var taskRevision int64
+	if err := tx.QueryRowContext(ctx, "SELECT status, revision FROM entities WHERE id=? AND workspace_id=?", current.TaskID, workspaceID).Scan(&taskStatus, &taskRevision); err != nil {
 		return domain.Run{}, fmt.Errorf("read run task status: %w", err)
 	}
 	if taskStatus != string(current.Status) {
@@ -744,7 +991,21 @@ func (s *Store) SetRunStatus(ctx context.Context, prefix, workspaceID string, st
 	} else if summary != "" {
 		payload = summary
 	}
-	if _, err := appendRunEvent(ctx, tx, current.ID, "status", payload, now); err != nil {
+	event, err := appendRunEvent(ctx, tx, current.ID, "status", payload, now)
+	if err != nil {
+		return domain.Run{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "run.status", current.ID+":status:"+fmt.Sprint(updated.Revision), current.ID, updated.Revision, updated, now); err != nil {
+		return domain.Run{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.status", current.TaskID+":status:"+fmt.Sprint(taskRevision+1), current.TaskID, taskRevision+1, map[string]any{
+		"entity_id": current.TaskID,
+		"status":    status,
+		"revision":  taskRevision + 1,
+	}, now); err != nil {
+		return domain.Run{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "run.event", current.ID+":event:"+fmt.Sprint(event.Sequence), current.ID, event.Sequence, event, event.CreatedAt); err != nil {
 		return domain.Run{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -765,6 +1026,9 @@ func (s *Store) AppendRunEvent(ctx context.Context, runID, workspaceID, kind, pa
 	defer tx.Rollback()
 	event, err := appendRunEvent(ctx, tx, run.ID, kind, payload, s.now())
 	if err != nil {
+		return domain.RunEvent{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, workspaceID, "run.event", run.ID+":event:"+fmt.Sprint(event.Sequence), run.ID, event.Sequence, event, event.CreatedAt); err != nil {
 		return domain.RunEvent{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -820,6 +1084,9 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact domain.Artifact) (d
 	}
 	defer tx.Rollback()
 	if err := insertArtifact(ctx, tx, artifact); err != nil {
+		return domain.Artifact{}, err
+	}
+	if err := s.recordChangeTx(ctx, tx, artifact.WorkspaceID, "artifact.created", artifact.ID+":created:"+fmt.Sprint(artifact.Revision), artifact.ID, artifact.Revision, artifact, artifact.CreatedAt); err != nil {
 		return domain.Artifact{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -967,6 +1234,9 @@ func (s *Store) Import(ctx context.Context, workspaceID string, bundle markdown.
 			entity.Revision, formatOptionalTime(entity.DeletedAt))
 		if err != nil {
 			return report, fmt.Errorf("import legacy item %q: %w", entity.LegacyID, err)
+		}
+		if err := s.recordChangeTx(ctx, tx, entity.WorkspaceID, "entity.imported", entity.ID+":imported:"+fmt.Sprint(entity.Revision), entity.ID, entity.Revision, entity, entity.CreatedAt); err != nil {
+			return report, err
 		}
 		report.Created++
 	}

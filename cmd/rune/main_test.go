@@ -77,7 +77,7 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 }
 
-func TestRunV2LocalStructuredCaptureEditLinkAndSearch(t *testing.T) {
+func TestRunV2LocalStructuredCaptureLinkAndSearch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
 	db := filepath.Join(home, "rune-v2.db")
@@ -100,7 +100,7 @@ func TestRunV2LocalStructuredCaptureEditLinkAndSearch(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = run([]string{"v2", "status", taskID, "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
-	if code != 0 || !strings.Contains(stdout.String(), "Updated "+taskID) {
+	if code != 0 || !strings.Contains(stdout.String(), "Status "+taskID) {
 		t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 
@@ -127,6 +127,39 @@ func TestRunV2LocalStructuredCaptureEditLinkAndSearch(t *testing.T) {
 	for _, want := range []string{"Kind: task", "Status: ready", "Links:", "references"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("show missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunV2SyncReportsLocalLedgerAndRejectsAuthoredMutation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "immutable task", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "edit", taskID, "--title", "changed", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code == 0 || !strings.Contains(stderr.String(), "append-only") {
+		t.Fatalf("edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "delete", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code == 0 || !strings.Contains(stderr.String(), "cannot be edited or deleted") {
+		t.Fatalf("delete code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Workspace: local", "Remote: not-configured", "Local cursor: 1", "Pending changes: 1", "Open conflicts: 0"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("sync output missing %q:\n%s", want, stdout.String())
 		}
 	}
 }

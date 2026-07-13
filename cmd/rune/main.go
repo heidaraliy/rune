@@ -328,7 +328,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 
 func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
 	if len(args) == 0 {
-		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, tui, or import")
+		return errors.New("v2 requires a subcommand: init, capture, list, show, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, tui, or import")
 	}
 	switch args[0] {
 	case "init":
@@ -339,8 +339,8 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2List(args[1:], stdout, cwd)
 	case "show":
 		return runV2Show(args[1:], stdout, cwd)
-	case "edit":
-		return runV2Edit(args[1:], stdout, cwd)
+	case "edit", "delete":
+		return errors.New("rune v2 is append-only: authored notes and tasks cannot be edited or deleted; capture a new item instead")
 	case "status":
 		return runV2Status(args[1:], stdout, cwd)
 	case "search", "find":
@@ -361,6 +361,8 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2Artifacts(args[1:], stdout, cwd)
 	case "artifact":
 		return runV2Artifact(args[1:], stdout, cwd)
+	case "sync":
+		return runV2Sync(args[1:], stdout, cwd)
 	case "tui":
 		return runV2TUI(args[1:], stdout, stderr, cwd)
 	case "import":
@@ -592,66 +594,6 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	return nil
 }
 
-func runV2Edit(args []string, stdout io.Writer, cwd string) error {
-	fs := flag.NewFlagSet("rune v2 edit", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	dbPath := fs.String("db", "", "v2 database path")
-	workspace := fs.String("workspace", "local", "workspace id")
-	title := fs.String("title", "", "new title")
-	body := fs.String("body", "", "replace body")
-	appendBody := fs.String("end", "", "append body")
-	status := fs.String("status", "", "task status")
-	priority := fs.Int("priority", 0, "priority")
-	revision := fs.Int64("revision", 0, "expected revision")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "status": true, "priority": true, "revision": true})
-	if err != nil {
-		return err
-	}
-	if len(pos) != 1 {
-		return errors.New("v2 edit requires one id")
-	}
-	update := domain.Update{ExpectedRevision: *revision}
-	changed := false
-	if *title != "" {
-		update.Title = stringUpdate(core.DecodeEscapes(*title))
-		changed = true
-	}
-	if *body != "" {
-		update.Body = stringUpdate(core.DecodeEscapes(*body))
-		changed = true
-	}
-	if *appendBody != "" {
-		update.AppendBody = stringUpdate(core.DecodeEscapes(*appendBody))
-		changed = true
-	}
-	if *status != "" {
-		parsed, err := domain.NormalizeStatus(*status)
-		if err != nil {
-			return err
-		}
-		update.Status = &parsed
-		changed = true
-	}
-	if *priority != 0 {
-		update.Priority = priority
-		changed = true
-	}
-	if !changed {
-		return errors.New("v2 edit requires --title, --body, --end, --status, or --priority")
-	}
-	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
-	if err != nil {
-		return err
-	}
-	defer closeStore()
-	entity, err := service.Update(context.Background(), pos[0], update)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
-	return nil
-}
-
 func runV2Status(args []string, stdout io.Writer, cwd string) error {
 	fs := flag.NewFlagSet("rune v2 status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -674,11 +616,57 @@ func runV2Status(args []string, stdout io.Writer, cwd string) error {
 		return err
 	}
 	defer closeStore()
-	entity, err := service.Update(context.Background(), pos[0], domain.Update{ExpectedRevision: *revision, Status: &status})
+	entity, err := service.SetTaskStatus(context.Background(), pos[0], status, *revision)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Status)
+	fmt.Fprintf(stdout, "Status %s  %s\n", domain.DisplayID(entity.ID), entity.Status)
+	return nil
+}
+
+func runV2Sync(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 sync", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	status, err := service.SyncStatus(context.Background())
+	if err != nil {
+		return err
+	}
+	conflicts, err := service.Conflicts(context.Background())
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(struct {
+			Status    domain.SyncStatus `json:"status"`
+			Conflicts []domain.Conflict `json:"conflicts"`
+		}{Status: status, Conflicts: conflicts}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	fmt.Fprintf(stdout, "Workspace: %s\nRemote: %s\nLocal cursor: %d\nPending changes: %d\nOpen conflicts: %d\n",
+		status.WorkspaceID, status.RemoteState, status.LocalCursor, status.PendingChanges, status.OpenConflicts)
+	for _, conflict := range conflicts {
+		fmt.Fprintf(stdout, "Conflict %s  %s  entity %s  local %d / remote %d\n",
+			domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision)
+	}
 	return nil
 }
 
@@ -1594,10 +1582,6 @@ func readAll(r io.Reader) (string, error) {
 	return buf.String(), err
 }
 
-func stringUpdate(value string) *string {
-	return &value
-}
-
 func printItems(w io.Writer, home string, items []*core.Item) {
 	if len(items) == 0 {
 		fmt.Fprintln(w, "No items.")
@@ -1884,7 +1868,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
-	  rune v2 <init|capture|list|show|edit|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|tui|import> ...
+	  rune v2 <init|capture|list|show|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync|tui|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global

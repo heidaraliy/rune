@@ -65,6 +65,19 @@ func TestLocalExecutionQueuesRunsAndStoresContextAndResult(t *testing.T) {
 	if err != nil || len(events) != 5 {
 		t.Fatalf("events = %#v, err=%v", events, err)
 	}
+	changes, err := service.Changes(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenKinds := make(map[string]bool)
+	for _, change := range changes {
+		seenKinds[change.Kind] = true
+	}
+	for _, kind := range []string{"entity.created", "run.created", "artifact.created", "entity.status", "run.status", "run.event"} {
+		if !seenKinds[kind] {
+			t.Fatalf("sync ledger missing %q: %#v", kind, changes)
+		}
+	}
 }
 
 func TestLocalExecutionRecordsProviderFailure(t *testing.T) {

@@ -59,17 +59,6 @@ type Entity struct {
 	DeletedAt    *time.Time        `json:"deleted_at,omitempty"`
 }
 
-type Update struct {
-	ExpectedRevision int64
-	Title            *string
-	Body             *string
-	AppendBody       *string
-	Heading          *string
-	Tags             *[]string
-	Status           *Status
-	Priority         *int
-}
-
 type ListOptions struct {
 	WorkspaceID    string
 	Project        string
@@ -87,6 +76,79 @@ type Link struct {
 	Kind        string    `json:"kind"`
 	CreatedAt   time.Time `json:"created_at"`
 	Revision    int64     `json:"revision"`
+}
+
+type Change struct {
+	ID          string    `json:"id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Cursor      int64     `json:"cursor"`
+	OperationID string    `json:"operation_id"`
+	ActorID     string    `json:"actor_id"`
+	DeviceID    string    `json:"device_id"`
+	Kind        string    `json:"kind"`
+	EntityID    string    `json:"entity_id,omitempty"`
+	Revision    int64     `json:"revision"`
+	Payload     string    `json:"payload"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type Conflict struct {
+	ID             string    `json:"id"`
+	WorkspaceID    string    `json:"workspace_id"`
+	EntityID       string    `json:"entity_id"`
+	Kind           string    `json:"kind"`
+	LocalRevision  int64     `json:"local_revision"`
+	RemoteRevision int64     `json:"remote_revision"`
+	LocalPayload   string    `json:"local_payload"`
+	RemotePayload  string    `json:"remote_payload"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type SyncStatus struct {
+	WorkspaceID    string `json:"workspace_id"`
+	RemoteState    string `json:"remote_state"`
+	LocalCursor    int64  `json:"local_cursor"`
+	PendingChanges int    `json:"pending_changes"`
+	OpenConflicts  int    `json:"open_conflicts"`
+}
+
+func (c Change) Validate() error {
+	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.WorkspaceID) == "" {
+		return errors.New("change id and workspace id are required")
+	}
+	if c.Cursor < 0 {
+		return errors.New("change cursor cannot be negative")
+	}
+	if strings.TrimSpace(c.OperationID) == "" || strings.TrimSpace(c.ActorID) == "" || strings.TrimSpace(c.DeviceID) == "" {
+		return errors.New("change operation, actor, and device are required")
+	}
+	if strings.TrimSpace(c.Kind) == "" || strings.TrimSpace(c.Payload) == "" {
+		return errors.New("change kind and payload are required")
+	}
+	if c.Revision < 1 {
+		return errors.New("change revision must be positive")
+	}
+	return nil
+}
+
+func (c Conflict) Validate() error {
+	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.WorkspaceID) == "" || strings.TrimSpace(c.EntityID) == "" {
+		return errors.New("conflict id, workspace id, and entity id are required")
+	}
+	if strings.TrimSpace(c.Kind) == "" || strings.TrimSpace(c.LocalPayload) == "" || strings.TrimSpace(c.RemotePayload) == "" {
+		return errors.New("conflict kind and both payloads are required")
+	}
+	if c.LocalRevision < 1 || c.RemoteRevision < 1 {
+		return errors.New("conflict revisions must be positive")
+	}
+	if c.Status == "" {
+		c.Status = "open"
+	}
+	if c.Status != "open" {
+		return fmt.Errorf("unsupported conflict status %q", c.Status)
+	}
+	return nil
 }
 
 type RunStatus string

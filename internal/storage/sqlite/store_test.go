@@ -51,8 +51,8 @@ func TestOpenUpgradesSlice2DatabaseToSlice3Schema(t *testing.T) {
 	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("schema version = %d, want 3", version)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
 	}
 }
 
-func TestUpdateUsesOptimisticRevisionAndStatusTimestamps(t *testing.T) {
+func TestSetTaskStatusUsesOptimisticRevisionAndStatusTimestamps(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	task, err := store.Create(ctx, domain.Entity{Kind: domain.KindTask, WorkspaceID: "local", Title: "ship", Status: domain.StatusDraft})
@@ -91,15 +91,55 @@ func TestUpdateUsesOptimisticRevisionAndStatusTimestamps(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := domain.StatusCompleted
-	updated, err := store.Update(ctx, task.ID, "local", domain.Update{ExpectedRevision: 1, Status: &status})
+	updated, err := store.SetTaskStatus(ctx, task.ID, "local", status, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Revision != 2 || updated.Status != domain.StatusCompleted || updated.FinishedAt == nil {
 		t.Fatalf("updated = %#v", updated)
 	}
-	if _, err := store.Update(ctx, task.ID, "local", domain.Update{ExpectedRevision: 1, Title: stringUpdate("stale")}); err == nil {
-		t.Fatal("stale revision should fail")
+	changes, err := store.ListChanges(ctx, "local", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 || changes[0].Kind != "entity.created" || changes[1].Kind != "entity.status" {
+		t.Fatalf("changes = %#v", changes)
+	}
+}
+
+func TestSyncStatusAndConflictsAreVisibleWithoutMutatingEntities(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "immutable note", Body: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := store.RecordConflict(ctx, domain.Conflict{
+		WorkspaceID:    "local",
+		EntityID:       note.ID,
+		Kind:           "entity.created",
+		LocalRevision:  1,
+		RemoteRevision: 1,
+		LocalPayload:   `{"title":"immutable note","body":"original"}`,
+		RemotePayload:  `{"title":"immutable note","body":"remote variant"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.SyncStatus(ctx, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.LocalCursor != 1 || status.PendingChanges != 1 || status.OpenConflicts != 1 || status.RemoteState != "not-configured" {
+		t.Fatalf("sync status = %#v", status)
+	}
+	conflicts, err := store.ListConflicts(ctx, "local")
+	if err != nil || len(conflicts) != 1 || conflicts[0].ID != conflict.ID {
+		t.Fatalf("conflicts = %#v, err=%v", conflicts, err)
+	}
+	got, err := store.Get(ctx, note.ID, "local")
+	if err != nil || got.Title != note.Title || got.Body != note.Body || got.Revision != note.Revision {
+		t.Fatalf("note changed while recording conflict: %#v, err=%v", got, err)
 	}
 }
 
@@ -168,8 +208,7 @@ func TestQueueRunTransitionsTaskAndPersistsEventsAndArtifacts(t *testing.T) {
 	if err != nil || queuedTask.Status != domain.StatusQueued || queuedTask.Revision != 2 {
 		t.Fatalf("queued task = %#v, err=%v", queuedTask, err)
 	}
-	ready := domain.StatusReady
-	if _, err := store.Update(ctx, task.ID, "local", domain.Update{Status: &ready}); err == nil {
+	if _, err := store.SetTaskStatus(ctx, task.ID, "local", domain.StatusReady, 0); err == nil {
 		t.Fatal("active run should own task status")
 	}
 	for _, status := range []domain.RunStatus{domain.RunStatusRunning, domain.RunStatusReview, domain.RunStatusCompleted} {
@@ -228,5 +267,3 @@ func TestImportIsSourcePreservingAndIdempotent(t *testing.T) {
 		t.Fatalf("items = %#v, err=%v", items, err)
 	}
 }
-
-func stringUpdate(value string) *string { return &value }

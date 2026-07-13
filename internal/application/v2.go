@@ -47,8 +47,8 @@ func (s V2Service) List(ctx context.Context, options domain.ListOptions) ([]doma
 	return s.Store.List(ctx, options)
 }
 
-func (s V2Service) Update(ctx context.Context, prefix string, update domain.Update) (domain.Entity, error) {
-	return s.Store.Update(ctx, prefix, s.WorkspaceID, update)
+func (s V2Service) SetTaskStatus(ctx context.Context, prefix string, status domain.Status, expectedRevision int64) (domain.Entity, error) {
+	return s.Store.SetTaskStatus(ctx, prefix, s.WorkspaceID, status, expectedRevision)
 }
 
 func (s V2Service) Link(ctx context.Context, from, to, kind string) (domain.Link, error) {
@@ -62,6 +62,23 @@ func (s V2Service) Link(ctx context.Context, from, to, kind string) (domain.Link
 
 func (s V2Service) Links(ctx context.Context, entityID string) ([]domain.Link, error) {
 	return s.Store.ListLinks(ctx, s.WorkspaceID, entityID)
+}
+
+func (s V2Service) Changes(ctx context.Context, afterCursor int64, limit int) ([]domain.Change, error) {
+	return s.Store.ListChanges(ctx, s.WorkspaceID, afterCursor, limit)
+}
+
+func (s V2Service) Conflicts(ctx context.Context) ([]domain.Conflict, error) {
+	return s.Store.ListConflicts(ctx, s.WorkspaceID)
+}
+
+func (s V2Service) RecordConflict(ctx context.Context, conflict domain.Conflict) (domain.Conflict, error) {
+	conflict.WorkspaceID = s.WorkspaceID
+	return s.Store.RecordConflict(ctx, conflict)
+}
+
+func (s V2Service) SyncStatus(ctx context.Context) (domain.SyncStatus, error) {
+	return s.Store.SyncStatus(ctx, s.WorkspaceID)
 }
 
 func (s V2Service) Import(ctx context.Context, bundle markdown.Bundle) (sqlite.ImportReport, error) {

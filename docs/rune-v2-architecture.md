@@ -1,8 +1,9 @@
 # Rune 2 Architecture RFC
 
-Status: Slice 4 local TUI vertical slice. The structured store, local
-fake-provider loop, and first Rune 2 Bubble Tea client are implemented behind
-the opt-in `rune v2` namespace; sync and remote workers remain future slices.
+Status: Slice 5A append-only local sync foundation. The structured store, local
+fake-provider loop, Rune 2 Bubble Tea client, revision cursor ledger, and
+visible conflict records are implemented behind the opt-in `rune v2` namespace;
+authentication, hosted sync, and remote workers remain future work.
 
 ## North Star
 
@@ -62,6 +63,13 @@ agent queue without changing its identity.
 Initial task states are `draft`, `ready`, `queued`, `running`, `blocked`,
 `review`, `completed`, `failed`, and `canceled`. The state machine must be
 explicit rather than inferred from a checkbox.
+
+Authored note and task identity/content is immutable after capture or import.
+Rune 2 has no edit or delete operation for authored items. Task lifecycle
+status changes are system-owned transitions produced by explicit status,
+queue, run, and cancel operations; they do not rewrite the authored title,
+body, or properties. To revise an idea, capture a new item and relate it to
+the original.
 
 ### Link
 
@@ -175,9 +183,9 @@ included in this slice.
 ### Slice 2: local structured foundation
 
 Add domain types, repository interfaces, SQLite schema/migrations, stable IDs,
-legacy Markdown import, and CLI parity for capture, list, show, edit, search,
-status, and links. The initial implementation is exposed behind the opt-in
-`rune v2` command namespace while legacy commands continue using Markdown.
+legacy Markdown import, and CLI parity for capture, list, show, search, status,
+and links. Rune 2 authored items are append-only; the legacy CLI remains
+unchanged while the opt-in `rune v2` namespace uses the structured store.
 
 ### Slice 3: local execution vertical slice
 
@@ -197,13 +205,20 @@ queue, run, artifact, and conflict views.
 
 The initial client is available through `rune v2 tui`. It keeps the legacy TUI
 separate, renders workspace entities with typed links, exposes run and artifact
-inspection, supports capture/search/queue/execute/cancel actions, and labels
-the local-only sync/conflict boundary until Slice 5 adds real conflict records.
+inspection, supports capture/search/queue/execute/cancel actions, and shows the
+local sync cursor plus open conflicts.
 
-### Slice 5: sync and shared workspaces
+### Slice 5A: append-only sync foundation
 
-Add authentication, server API, revision cursors, conflict records, and remote
-artifact storage.
+Add the local change ledger, monotonic cursors, conflict records containing
+both payloads, `rune v2 sync` inspection, and a TUI sync surface. The local
+store remains authoritative offline; no remote state is implied or overwritten.
+
+### Slice 5B: sync and shared workspaces
+
+Add authentication, server API, revision-aware push/pull, conflict ingestion,
+and remote artifact storage after the hosted deployment and identity boundary
+are selected.
 
 ### Slice 6: additional clients and workers
 
@@ -221,12 +236,10 @@ workers using the same API and run contract.
   run, artifact, client, and slice boundaries.
 - Agent config validation and hook syntax checks pass.
 
-## Open Decisions For Slice 2
+## Remaining Decisions For Hosted Sync
 
-- SQLite driver and migration framework
-- exact workspace/project mapping and local database path
-- Markdown block/task representation during import and export
-- operation log versus revision snapshots for sync
-- authentication provider and server deployment shape
-- artifact size limits, retention defaults, and secret scanning
+- remote cursor acknowledgement, retry, and idempotent push/pull protocol
+- authentication provider, actor/device identity, and server deployment shape
+- remote artifact storage, size limits, retention defaults, and secret scanning
+- conflict review/acknowledgement workflow without mutating authored items
 - whether tasks embedded in notes are rendered from links or materialized blocks
