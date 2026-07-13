@@ -12,5 +12,6 @@ Read only the instruction files that match the task.
 | `internal/core/**`, Markdown parsing, note-file writes, IDs, archive/restore/import/path behavior | `store-safety.instructions.md` |
 | `go.mod`, build/test workflow, local binary checks, CI-equivalent validation | `build-validation.instructions.md` |
 | `.github/**`, releases, install docs, repo automation, PR publishing | `repo-automation.instructions.md` |
+| Rune 2 domain, schema, migration, graph, sync, runs, artifacts, API, or worker work | `rune-v2-architecture.instructions.md` |
 
 When a task spans domains, read all matching files and load the corresponding Rune skills.

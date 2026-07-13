@@ -29,3 +29,14 @@ Expected:
 
 - Tests do not open a real editor or write to the real clipboard.
 - User-visible status distinguishes success from failure.
+
+## Rune 2 Workspace Views
+
+With disposable domain fixtures, inspect note/task, graph, run, artifact, and
+sync-conflict views at compact widths.
+
+Expected:
+
+- Relationships are understandable without a graphical canvas.
+- Run lifecycle and artifact availability are visible and stale updates do not overwrite newer state.
+- The command palette exposes actions that are not present in the footer.

@@ -31,3 +31,5 @@ Expected:
 - `python3 tools/agents/scripts/validate_agent_config.py` fails on missing required surfaces.
 - Skill frontmatter includes names and triggerable descriptions.
 - Literal escaped newlines from generated placeholders are rejected.
+- Rune 2 guidance distinguishes legacy Markdown from structured canonical storage.
+- Migration, sync, run, artifact, and permission guidance is discoverable from the routed docs.

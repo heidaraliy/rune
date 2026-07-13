@@ -1,6 +1,11 @@
 # Rune Skills
 
-Load only the skills needed for the current task. Prefer domain skills over the full `rune-agent` pipeline when the request is narrow.
+Load only the skills needed for the current task. Use the full `rune-agent`
+pipeline for cross-module Rune 2 work; use domain skills for narrow changes.
+
+Rune 2 vocabulary is defined in `docs/rune-v2-architecture.md`. Read that
+document when a task involves the structured domain, graph, sync, agent runs,
+artifacts, or a legacy-to-v2 migration.
 
 Core routing:
 

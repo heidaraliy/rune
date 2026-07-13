@@ -30,3 +30,11 @@ Expected:
 
 - The command fails cleanly.
 - Matching items are visible enough for the user to choose a longer ID.
+
+## Rune 2 Structured Output
+
+When v2 CLI commands exist, run them against a disposable database and verify:
+
+- JSON includes stable entity IDs, revisions, lifecycle state, and explicit link/artifact references.
+- Queue/run commands report observable terminal states and failures without requiring clipboard handoff.
+- Legacy command behavior remains unchanged until a documented cutover.

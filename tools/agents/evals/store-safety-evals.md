@@ -30,3 +30,14 @@ Expected:
 
 - Every item receives a unique internal ID.
 - Original task titles, done states, nesting, and headings remain recognizable.
+
+## Rune 2 Migration And Artifacts
+
+Migrate representative legacy Markdown into a disposable structured store.
+
+Expected:
+
+- Source files remain unchanged unless an explicit export is requested.
+- Legacy IDs map to stable v2 IDs and the migration reports unsupported or lossy constructs.
+- Re-running the migration is idempotent or reports conflicts without duplicating entities.
+- Artifact metadata records a content hash, provenance, limits, and retention decision.
