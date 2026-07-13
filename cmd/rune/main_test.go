@@ -67,6 +67,90 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 }
 
+func TestRunV2LocalStructuredCaptureEditLinkAndSearch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"v2", "capture", "build foundation", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("capture code = %d, stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "capture", "architecture note", "--note", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader("details"), cwd)
+	if code != 0 {
+		t.Fatalf("note capture code = %d, stderr=%q", code, stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "status", taskID, "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "Updated "+taskID) {
+		t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "link", taskID, noteID, "--kind", "references", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "references") {
+		t.Fatalf("link code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "search", "foundation", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "build foundation") {
+		t.Fatalf("search code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Kind: task", "Status: ready", "Links:", "references"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("show missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunV2ImportIsSourcePreservingAndIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	source := filepath.Join(t.TempDir(), "ideas.md")
+	original := "# ideas\n\n- [ ] imported task\n<!-- rune:id=import01 type=task created=2026-07-01T00:00:00Z -->\n"
+	if err := os.WriteFile(source, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	for attempt := 0; attempt < 2; attempt++ {
+		stdout.Reset()
+		stderr.Reset()
+		code := run([]string{"v2", "import", source, "--project", "ideas", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+		if code != 0 {
+			t.Fatalf("import attempt %d code=%d stderr=%q", attempt, code, stderr.String())
+		}
+		if attempt == 0 && !strings.Contains(stdout.String(), "Imported 1 item(s), skipped 0") {
+			t.Fatalf("first import output=%q", stdout.String())
+		}
+		if attempt == 1 && !strings.Contains(stdout.String(), "Imported 0 item(s), skipped 1") {
+			t.Fatalf("second import output=%q", stdout.String())
+		}
+	}
+	if after, err := os.ReadFile(source); err != nil || string(after) != original {
+		t.Fatalf("source changed err=%v:\n%s", err, string(after))
+	}
+}
+
 func TestRunListFormatsReadableCards(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

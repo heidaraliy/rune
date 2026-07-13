@@ -176,7 +176,8 @@ included in this slice.
 
 Add domain types, repository interfaces, SQLite schema/migrations, stable IDs,
 legacy Markdown import, and CLI parity for capture, list, show, edit, search,
-status, and links.
+status, and links. The initial implementation is exposed behind the opt-in
+`rune v2` command namespace while legacy commands continue using Markdown.
 
 ### Slice 3: local execution vertical slice
 

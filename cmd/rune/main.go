@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,13 +13,18 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/heidaraliy/rune/internal/app"
+	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/core"
+	"github.com/heidaraliy/rune/internal/domain"
 	"github.com/heidaraliy/rune/internal/handoff"
+	"github.com/heidaraliy/rune/internal/storage/markdown"
+	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
 )
 
 var version = "dev"
@@ -70,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) i
 		err = runTicket(rest, stdout, cwd)
 	case "codex":
 		err = runCodexTicket(rest, stdout, stderr, stdin, cwd)
+	case "v2":
+		err = runV2(rest, stdout, stderr, stdin, cwd)
 	case "edit":
 		err = runEdit(rest, stdout, stdin, cwd)
 	case "done":
@@ -312,6 +321,460 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 		return fmt.Errorf("codex failed: %w", err)
 	}
 	return nil
+}
+
+func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
+	if len(args) == 0 {
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, status, search, link, links, or import")
+	}
+	switch args[0] {
+	case "init":
+		return runV2Init(args[1:], stdout, cwd)
+	case "capture", "add":
+		return runV2Capture(args[1:], stdout, stdin, cwd)
+	case "list":
+		return runV2List(args[1:], stdout, cwd)
+	case "show":
+		return runV2Show(args[1:], stdout, cwd)
+	case "edit":
+		return runV2Edit(args[1:], stdout, cwd)
+	case "status":
+		return runV2Status(args[1:], stdout, cwd)
+	case "search", "find":
+		return runV2Search(args[1:], stdout, cwd)
+	case "link":
+		return runV2Link(args[1:], stdout, cwd)
+	case "links":
+		return runV2Links(args[1:], stdout, cwd)
+	case "import":
+		return runV2Import(args[1:], stdout, cwd)
+	default:
+		return fmt.Errorf("unknown v2 subcommand %q", args[0])
+	}
+}
+
+func runV2Init(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	_, service, closeStore, path, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	_ = service
+	fmt.Fprintf(stdout, "Initialized Rune 2 workspace %s at %s\n", *workspace, path)
+	return nil
+}
+
+func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 capture", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	body := fs.String("body", "", "body text")
+	fromStdin := fs.Bool("stdin", false, "read body from stdin")
+	asNote := fs.Bool("note", false, "capture a note instead of a task")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return errors.New("v2 capture requires text")
+	}
+	if *fromStdin {
+		text, err := readAll(stdin)
+		if err != nil {
+			return err
+		}
+		*body = text
+	}
+	scope, service, closeStore, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	kind := domain.KindTask
+	status := domain.StatusDraft
+	if *asNote {
+		kind = domain.KindNote
+		status = ""
+	}
+	entity, err := service.Create(context.Background(), domain.Entity{
+		Kind:      kind,
+		Project:   scope.Project,
+		Title:     core.DecodeEscapes(strings.Join(pos, " ")),
+		Body:      core.DecodeEscapes(*body),
+		Status:    status,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Created %s  %s  %s\n", domain.DisplayID(entity.ID), entity.Kind, entity.Title)
+	return nil
+}
+
+func runV2List(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	kind := fs.String("kind", "", "note or task")
+	status := fs.String("status", "", "task status")
+	query := fs.String("query", "", "search title and body")
+	all := fs.Bool("all", false, "all projects in the workspace")
+	global := fs.Bool("global", false, "all projects in the workspace")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	scope, service, closeStore, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	projectName := scope.Project
+	if *all || *global {
+		projectName = ""
+	}
+	options := domain.ListOptions{Project: projectName, Query: *query}
+	if *kind != "" {
+		options.Kind = domain.Kind(*kind)
+		if options.Kind != domain.KindNote && options.Kind != domain.KindTask {
+			return fmt.Errorf("unknown v2 kind %q; use note or task", *kind)
+		}
+	}
+	if *status != "" {
+		parsed, err := domain.NormalizeStatus(*status)
+		if err != nil {
+			return err
+		}
+		options.Status = parsed
+	}
+	items, err := service.List(context.Background(), options)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(stdout, "No v2 entities.")
+		return nil
+	}
+	for _, item := range items {
+		status := string(item.Status)
+		if status == "" {
+			status = "note"
+		}
+		fmt.Fprintf(stdout, "%s  %-4s  %-10s  %s", domain.DisplayID(item.ID), item.Kind, status, item.Title)
+		if item.Project != "" {
+			fmt.Fprintf(stdout, "  [%s]", item.Project)
+		}
+		fmt.Fprintln(stdout)
+	}
+	return nil
+}
+
+func runV2Show(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 show", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 show requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Get(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "ID: %s\nKind: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Kind, entity.Title, entity.Revision)
+	if entity.Project != "" {
+		fmt.Fprintf(stdout, "Project: %s\n", entity.Project)
+	}
+	if entity.Status != "" {
+		fmt.Fprintf(stdout, "Status: %s\n", entity.Status)
+	}
+	if len(entity.Tags) > 0 {
+		fmt.Fprintf(stdout, "Tags: #%s\n", strings.Join(entity.Tags, " #"))
+	}
+	if entity.Body != "" {
+		fmt.Fprintf(stdout, "\n%s\n", entity.Body)
+	}
+	links, err := service.Links(context.Background(), entity.ID)
+	if err != nil {
+		return err
+	}
+	if len(links) > 0 {
+		fmt.Fprintln(stdout, "\nLinks:")
+		for _, link := range links {
+			fmt.Fprintf(stdout, "- %s %s %s\n", link.Kind, domain.DisplayID(link.FromID), domain.DisplayID(link.ToID))
+		}
+	}
+	return nil
+}
+
+func runV2Edit(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 edit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	title := fs.String("title", "", "new title")
+	body := fs.String("body", "", "replace body")
+	appendBody := fs.String("end", "", "append body")
+	status := fs.String("status", "", "task status")
+	priority := fs.Int("priority", 0, "priority")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "status": true, "priority": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 edit requires one id")
+	}
+	update := domain.Update{ExpectedRevision: *revision}
+	changed := false
+	if *title != "" {
+		update.Title = stringUpdate(core.DecodeEscapes(*title))
+		changed = true
+	}
+	if *body != "" {
+		update.Body = stringUpdate(core.DecodeEscapes(*body))
+		changed = true
+	}
+	if *appendBody != "" {
+		update.AppendBody = stringUpdate(core.DecodeEscapes(*appendBody))
+		changed = true
+	}
+	if *status != "" {
+		parsed, err := domain.NormalizeStatus(*status)
+		if err != nil {
+			return err
+		}
+		update.Status = &parsed
+		changed = true
+	}
+	if *priority != 0 {
+		update.Priority = priority
+		changed = true
+	}
+	if !changed {
+		return errors.New("v2 edit requires --title, --body, --end, --status, or --priority")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Update(context.Background(), pos[0], update)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Status(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("v2 status requires an id and status")
+	}
+	status, err := domain.NormalizeStatus(pos[1])
+	if err != nil {
+		return err
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Update(context.Background(), pos[0], domain.Update{ExpectedRevision: *revision, Status: &status})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Status)
+	return nil
+}
+
+func runV2Search(args []string, stdout io.Writer, cwd string) error {
+	valueFlags := map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true}
+	var flags []string
+	var query []string
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			query = append(query, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if equal := strings.IndexByte(name, '='); equal >= 0 {
+			name = name[:equal]
+		}
+		if valueFlags[name] && !strings.Contains(arg, "=") && index+1 < len(args) {
+			index++
+			flags = append(flags, args[index])
+		}
+	}
+	if len(query) == 0 {
+		return errors.New("v2 search requires a query")
+	}
+	flags = append(flags, "--query", strings.Join(query, " "))
+	return runV2List(flags, stdout, cwd)
+}
+
+func runV2Link(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 link", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	kind := fs.String("kind", "references", "link kind")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "kind": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("v2 link requires a from id and to id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	from, err := service.Get(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	to, err := service.Get(context.Background(), pos[1])
+	if err != nil {
+		return err
+	}
+	link, err := service.Link(context.Background(), from.ID, to.ID, *kind)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Linked %s %s %s\n", domain.DisplayID(from.ID), link.Kind, domain.DisplayID(to.ID))
+	return nil
+}
+
+func runV2Links(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 links", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 links requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Get(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	links, err := service.Links(context.Background(), entity.ID)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		fmt.Fprintf(stdout, "%s  %s  %s\n", link.Kind, domain.DisplayID(link.FromID), domain.DisplayID(link.ToID))
+	}
+	return nil
+}
+
+func runV2Import(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 import", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 import requires one Markdown file")
+	}
+	bundle, err := markdown.ReadFile(pos[0], *project, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, bundle.Project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	report, err := service.Import(context.Background(), bundle)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Imported %d item(s), skipped %d from %s\n", report.Created, report.Skipped, report.SourcePath)
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(stdout, "Warning: %s\n", warning)
+	}
+	return nil
+}
+
+func openV2Service(cwd, project, workspace, dbPath string) (core.Scope, application.V2Service, func() error, string, error) {
+	scope, err := core.ResolveScope(cwd, false, project)
+	if err != nil {
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		dbPath = strings.TrimSpace(os.Getenv("RUNE_V2_DB"))
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		dbPath = v2sqlite.DefaultPath(scope.Home)
+	}
+	store, err := v2sqlite.Open(dbPath)
+	if err != nil {
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	return scope, application.NewV2Service(store, workspace), store.Close, dbPath, nil
 }
 
 type codexReasoningFlag struct {
@@ -808,6 +1271,10 @@ func readAll(r io.Reader) (string, error) {
 	return buf.String(), err
 }
 
+func stringUpdate(value string) *string {
+	return &value
+}
+
 func printItems(w io.Writer, home string, items []*core.Item) {
 	if len(items) == 0 {
 		fmt.Fprintln(w, "No items.")
@@ -1054,6 +1521,15 @@ func printError(w io.Writer, err error) {
 		fmt.Fprintln(w, "\nUse a longer id.")
 		return
 	}
+	var ambiguousV2 *v2sqlite.AmbiguousIDError
+	if errors.As(err, &ambiguousV2) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousV2.Error())
+		for _, item := range ambiguousV2.Matches {
+			fmt.Fprintf(w, "%-8s %s\n", domain.DisplayID(item.ID), item.Title)
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
 	fmt.Fprintf(w, "rune: %v\n", err)
 }
 
@@ -1067,6 +1543,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
+  rune v2 <init|capture|list|show|edit|status|search|link|links|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global
@@ -1074,7 +1551,7 @@ Usage:
   rune migrate [file] [--project p] [--force]
 
 Commands:
-  add, list, show, yank, ticket, codex, edit, done, undone, toggle, tag, untag, find
+  add, list, show, yank, ticket, codex, v2, edit, done, undone, toggle, tag, untag, find
   projects, tags, archive, restore, import, init, migrate, path, doctor`)
 }
 

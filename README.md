@@ -44,7 +44,8 @@ Outside a git project, pass `--project` to write directly to
 
 ## Storage
 
-Rune writes Markdown. No database, no hosted service, no sync layer.
+The default Rune commands write Markdown. The current legacy path has no hosted
+service or sync layer.
 
 ```text
 ~/notes/
@@ -56,6 +57,16 @@ Set `RUNE_HOME` to use another store.
 
 ```sh
 RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
+```
+
+Rune 2 is available as an opt-in local structured-store preview. It uses SQLite
+at `RUNE_HOME/rune-v2.db` by default, or an explicit `--db` path, and does not
+sync to the cloud yet:
+
+```sh
+rune v2 capture "design sync" --project rune
+rune v2 list --project rune
+rune v2 import path/to/notes.md --project rune --db /path/to/rune-v2.db
 ```
 
 For notes that should travel with a repository, initialize a project-local
@@ -117,6 +128,7 @@ rune init [--project lune]
 rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
+rune v2 <init|capture|list|show|edit|status|search|link|links|import> ...
 ```
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can
