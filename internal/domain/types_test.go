@@ -120,6 +120,44 @@ func TestNormalizeRuneStateSupportsCanonicalAliases(t *testing.T) {
 	}
 }
 
+func TestRuneCustomFacetsAndScopedPropertiesNormalize(t *testing.T) {
+	note := Rune{
+		ID:          "note",
+		Kind:        KindNote,
+		WorkspaceID: "local",
+		Title:       "proposal",
+		FacetSet:    []RuneFacet{" Proposal ", FacetDocument, "proposal"},
+		Properties:  map[string]string{" audience ": "team"},
+		FacetProperties: map[RuneFacet]map[string]string{
+			"proposal": {"decision": "pending"},
+		},
+	}
+	if err := note.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(note.Facets()) != 2 || note.Facets()[1] != "proposal" || note.Properties["audience"] != "team" || note.FacetProperties["proposal"]["decision"] != "pending" {
+		t.Fatalf("normalized custom Rune = %#v", note)
+	}
+
+	if err := note.ApplyPropertyChanges([]RunePropertyChange{
+		{Key: "owner", Value: "codex"},
+		{Facet: "proposal", Key: "decision", Value: "accepted"},
+		{Key: "audience", Delete: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if note.Properties["owner"] != "codex" || note.Properties["audience"] != "" || note.FacetProperties["proposal"]["decision"] != "accepted" {
+		t.Fatalf("property changes = %#v", note)
+	}
+
+	if _, err := NormalizeRuneFacet("bad facet"); err == nil {
+		t.Fatal("facet names with spaces should fail")
+	}
+	if err := note.ApplyPropertyChanges([]RunePropertyChange{{Facet: "task", Key: "assignee", Value: "agent"}}); err == nil {
+		t.Fatal("inactive facet property should fail")
+	}
+}
+
 func TestResolveRuneIDAcceptsStableAndShortForms(t *testing.T) {
 	for _, test := range []struct {
 		input string

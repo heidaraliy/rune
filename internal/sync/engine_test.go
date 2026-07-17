@@ -29,7 +29,17 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entity, err := storeA.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "shared idea", Body: "from A"})
+	entity, err := storeA.Create(ctx, domain.Entity{
+		Kind:        domain.KindNote,
+		WorkspaceID: "local",
+		Title:       "shared idea",
+		Body:        "from A",
+		FacetSet:    []domain.RuneFacet{"proposal"},
+		Properties:  map[string]string{"audience": "team"},
+		FacetProperties: map[domain.RuneFacet]map[string]string{
+			"proposal": {"decision": "pending"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +99,7 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 		t.Fatalf("second client sync report = %#v", report)
 	}
 	shared, err := storeB.Get(ctx, entity.ID, "local")
-	if err != nil || shared.Title != entity.Title || shared.Body != entity.Body {
+	if err != nil || shared.Title != entity.Title || shared.Body != entity.Body || !shared.HasFacet("proposal") || shared.Properties["audience"] != "team" || shared.FacetProperties["proposal"]["decision"] != "pending" {
 		t.Fatalf("shared entity on B = %#v, err=%v", shared, err)
 	}
 	remoteChild, err := storeB.Get(ctx, child.ID, "local")

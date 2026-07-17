@@ -886,6 +886,18 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 	if update.Tags != nil {
 		current.Tags = domain.NormalizeTags(*update.Tags)
 	}
+	if update.Facets != nil {
+		facets, err := domain.NormalizeRuneFacets(*update.Facets, current.Kind)
+		if err != nil {
+			return domain.Entity{}, err
+		}
+		current.FacetSet = facets
+	}
+	if update.PropertyChanges != nil {
+		if err := current.ApplyPropertyChanges(update.PropertyChanges); err != nil {
+			return domain.Entity{}, err
+		}
+	}
 	if update.Priority != nil {
 		current.Priority = *update.Priority
 	}
@@ -963,7 +975,7 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 			current.FinishedAt = nil
 		}
 	}
-	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.State == nil && update.Priority == nil && update.ParentID == nil && update.SiblingOrder == nil {
+	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Facets == nil && update.PropertyChanges == nil && update.Status == nil && update.State == nil && update.Priority == nil && update.ParentID == nil && update.SiblingOrder == nil {
 		return domain.Entity{}, errors.New("v2 update requires at least one field")
 	}
 	current.UpdatedAt = s.now()
@@ -1849,16 +1861,22 @@ func (s *Store) prepareEntity(entity domain.Entity) (domain.Entity, error) {
 	return entity, nil
 }
 
+type storedRuneProperties struct {
+	Schema string                                 `json:"schema"`
+	Common map[string]string                      `json:"common,omitempty"`
+	Facets map[domain.RuneFacet]map[string]string `json:"facets,omitempty"`
+}
+
 func encodeMetadata(entity domain.Entity) (string, string, string, error) {
 	tags, err := json.Marshal(domain.NormalizeTags(entity.Tags))
 	if err != nil {
 		return "", "", "", fmt.Errorf("encode entity tags: %w", err)
 	}
-	properties := entity.Properties
-	if properties == nil {
-		properties = map[string]string{}
-	}
-	encodedProperties, err := json.Marshal(properties)
+	encodedProperties, err := json.Marshal(storedRuneProperties{
+		Schema: "rune.properties.v1",
+		Common: entity.Properties,
+		Facets: entity.FacetProperties,
+	})
 	if err != nil {
 		return "", "", "", fmt.Errorf("encode entity properties: %w", err)
 	}
@@ -1913,8 +1931,8 @@ func scanEntity(row rowScanner) (domain.Entity, error) {
 	if err := json.Unmarshal([]byte(tagsJSON), &entity.Tags); err != nil {
 		return domain.Entity{}, fmt.Errorf("decode entity tags: %w", err)
 	}
-	if err := json.Unmarshal([]byte(propertiesJSON), &entity.Properties); err != nil {
-		return domain.Entity{}, fmt.Errorf("decode entity properties: %w", err)
+	if err := decodeRuneProperties(propertiesJSON, &entity); err != nil {
+		return domain.Entity{}, err
 	}
 	if err := json.Unmarshal([]byte(facetsJSON), &entity.FacetSet); err != nil {
 		return domain.Entity{}, fmt.Errorf("decode entity facets: %w", err)
@@ -1923,6 +1941,23 @@ func scanEntity(row rowScanner) (domain.Entity, error) {
 		return domain.Entity{}, err
 	}
 	return entity, nil
+}
+
+func decodeRuneProperties(encoded string, entity *domain.Entity) error {
+	var envelope struct {
+		Schema string                                 `json:"schema"`
+		Common map[string]string                      `json:"common"`
+		Facets map[domain.RuneFacet]map[string]string `json:"facets"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &envelope); err == nil && envelope.Schema == "rune.properties.v1" {
+		entity.Properties = envelope.Common
+		entity.FacetProperties = envelope.Facets
+		return nil
+	}
+	if err := json.Unmarshal([]byte(encoded), &entity.Properties); err != nil {
+		return fmt.Errorf("decode entity properties: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) prepareRun(run domain.Run) (domain.Run, error) {

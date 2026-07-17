@@ -1,13 +1,13 @@
 # Rune Architecture RFC
 
-Status: Slice 6C first-class Rune state and facet storage. The local structured
+Status: Slice 6D custom facets and facet-scoped properties. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
 file-backed sync peer, revision-aware push/pull, artifact transfer, visible
 conflict records, stable `rune://` references, explicit sibling ordering,
-shared query/client contracts, persisted facets, and canonical lifecycle state
-are implemented behind the opt-in `rune v2` namespace; custom facet authoring,
-hosted authentication, server deployment, and remote workers remain future
-work.
+shared query/client contracts, persisted facets, canonical lifecycle state, and
+custom facet/property authoring are implemented behind the opt-in `rune v2`
+namespace; hosted authentication, server deployment, and remote workers remain
+future work.
 
 ## North Star
 
@@ -290,9 +290,8 @@ SQLite-backed implementation. Parent capture/edit/list flows accept short IDs
 and `rune://` references, and migration backfills deterministic sibling order
 for existing rows.
 
-Full facet-specific properties and a first-class embedded `sync` API remain
-separate slices; this boundary does not claim a hosted service or replace the
-legacy Markdown commands.
+An embedded `sync` API remains a separate slice; this boundary does not claim a
+hosted service or replace the legacy Markdown commands.
 
 ### Slice 6C: first-class facets and Rune lifecycle
 
@@ -308,6 +307,21 @@ legacy task status. Queueing keeps a Rune ready, execution moves it through
 `ready`. Remote status payloads carry state while accepting older payloads that
 only contain status. The CLI and TUI expose the canonical state without
 removing legacy status commands.
+
+### Slice 6D: custom facets and facet-scoped properties
+
+Allow Runes to carry normalized custom facets such as `proposal`, `research`,
+or `decision` while preserving the built-in `document` facet and task
+capability invariants. Store common properties separately from facet-scoped
+properties. Existing flat `properties_json` objects decode as common
+properties; new structured writes use a versioned envelope in the same column,
+so this slice does not require another schema migration.
+
+The shared update contract supports revision-checked property changes and
+facet replacement. CLI capture/edit/show/JSON flows author and inspect these
+values, and the TUI displays them without creating a second client model.
+Custom facets are labels in this slice, not user-defined schemas or executable
+behavior.
 
 ### Slice 7: additional clients and workers
 
@@ -353,13 +367,25 @@ workers using the same `sync` API and run contract.
 - Legacy Markdown commands and source files remain unchanged by structured
   state migration.
 
+## Slice 6D Acceptance Criteria
+
+- Facet names are normalized and validated; every Rune has `document`, and
+  task-capable Runes retain `task`.
+- Common and facet-scoped properties round-trip through JSON, SQLite, full
+  entity sync, and legacy flat property storage without data loss.
+- Property and facet mutations are revision-checked, reject inactive facet
+  writes, and permit removing a facet together with its stale properties.
+- CLI capture/edit/show/JSON output and the TUI expose the same facet/property
+  contract with deterministic human-readable output.
+- No Markdown files, metadata comments, archive paths, or legacy commands are
+  changed by this structured property evolution.
+
 ## Remaining Decisions For Hosted Sync
 
 - remote cursor acknowledgement, retry, and idempotent push/pull protocol
 - authentication provider, actor/device identity, and server deployment shape
 - remote artifact storage, size limits, retention defaults, and secret scanning
 - conflict review/acknowledgement workflow without mutating authored items
-- how future facet-specific properties map to the transitional `Entity`
-  compatibility model
+- whether custom facets should gain versioned schemas and validation rules
 - whether child Runes are rendered from links, materialized blocks, or both
 - the first versioned `sync` API shape and local embedded-client boundary

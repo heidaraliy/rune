@@ -62,29 +62,30 @@ var validRuneStates = map[RuneState]struct{}{
 }
 
 type Entity struct {
-	ID           string            `json:"id"`
-	Kind         Kind              `json:"kind"`
-	WorkspaceID  string            `json:"workspace_id"`
-	Project      string            `json:"project,omitempty"`
-	Title        string            `json:"title"`
-	Body         string            `json:"body,omitempty"`
-	Heading      string            `json:"heading,omitempty"`
-	Tags         []string          `json:"tags,omitempty"`
-	Properties   map[string]string `json:"properties,omitempty"`
-	Status       Status            `json:"status,omitempty"`
-	State        RuneState         `json:"state,omitempty"`
-	Priority     int               `json:"priority,omitempty"`
-	ParentID     string            `json:"parent_id,omitempty"`
-	SiblingOrder int               `json:"sibling_order,omitempty"`
-	FacetSet     []RuneFacet       `json:"-"`
-	SourceNoteID string            `json:"source_note_id,omitempty"`
-	LegacyID     string            `json:"legacy_id,omitempty"`
-	LegacySource string            `json:"legacy_source,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
-	Revision     int64             `json:"revision"`
-	DeletedAt    *time.Time        `json:"deleted_at,omitempty"`
+	ID              string                          `json:"id"`
+	Kind            Kind                            `json:"kind"`
+	WorkspaceID     string                          `json:"workspace_id"`
+	Project         string                          `json:"project,omitempty"`
+	Title           string                          `json:"title"`
+	Body            string                          `json:"body,omitempty"`
+	Heading         string                          `json:"heading,omitempty"`
+	Tags            []string                        `json:"tags,omitempty"`
+	Properties      map[string]string               `json:"properties,omitempty"`
+	FacetProperties map[RuneFacet]map[string]string `json:"facet_properties,omitempty"`
+	Status          Status                          `json:"status,omitempty"`
+	State           RuneState                       `json:"state,omitempty"`
+	Priority        int                             `json:"priority,omitempty"`
+	ParentID        string                          `json:"parent_id,omitempty"`
+	SiblingOrder    int                             `json:"sibling_order,omitempty"`
+	FacetSet        []RuneFacet                     `json:"-"`
+	SourceNoteID    string                          `json:"source_note_id,omitempty"`
+	LegacyID        string                          `json:"legacy_id,omitempty"`
+	LegacySource    string                          `json:"legacy_source,omitempty"`
+	CreatedAt       time.Time                       `json:"created_at"`
+	UpdatedAt       time.Time                       `json:"updated_at"`
+	FinishedAt      *time.Time                      `json:"finished_at,omitempty"`
+	Revision        int64                           `json:"revision"`
+	DeletedAt       *time.Time                      `json:"deleted_at,omitempty"`
 }
 
 // Rune is the canonical name for the durable workspace object. Entity is kept
@@ -97,6 +98,27 @@ const (
 	FacetDocument RuneFacet = "document"
 	FacetTask     RuneFacet = "task"
 )
+
+func NormalizeRuneFacet(value string) (RuneFacet, error) {
+	facet := RuneFacet(strings.ToLower(strings.TrimSpace(value)))
+	if facet == "" {
+		return "", errors.New("Rune facet name is required")
+	}
+	hasWord := false
+	for _, char := range string(facet) {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+				hasWord = true
+			}
+			continue
+		}
+		return "", fmt.Errorf("invalid Rune facet %q: use lowercase letters, numbers, hyphens, or underscores", value)
+	}
+	if !hasWord {
+		return "", fmt.Errorf("invalid Rune facet %q: include at least one letter or number", value)
+	}
+	return facet, nil
+}
 
 func (e Entity) Facets() []RuneFacet {
 	if len(e.FacetSet) > 0 {
@@ -128,25 +150,77 @@ func NormalizeRuneFacets(facets []RuneFacet, kind Kind) ([]RuneFacet, error) {
 	seen := make(map[RuneFacet]struct{}, len(facets)+1)
 	normalized := make([]RuneFacet, 0, len(facets)+1)
 	for _, facet := range facets {
-		facet = RuneFacet(strings.ToLower(strings.TrimSpace(string(facet))))
-		if facet == "" {
-			continue
+		normalizedFacet, err := NormalizeRuneFacet(string(facet))
+		if err != nil {
+			return nil, err
 		}
-		if facet != FacetDocument && facet != FacetTask {
-			return nil, fmt.Errorf("unsupported Rune facet %q", facet)
-		}
+		facet = normalizedFacet
 		if _, ok := seen[facet]; ok {
 			continue
 		}
 		seen[facet] = struct{}{}
 		normalized = append(normalized, facet)
 	}
-	if _, ok := seen[FacetDocument]; !ok {
-		normalized = append([]RuneFacet{FacetDocument}, normalized...)
-	}
+	ordered := make([]RuneFacet, 0, len(normalized)+1)
+	ordered = append(ordered, FacetDocument)
 	if kind == KindTask {
-		if _, ok := seen[FacetTask]; !ok {
-			normalized = append(normalized, FacetTask)
+		ordered = append(ordered, FacetTask)
+	} else if _, ok := seen[FacetTask]; ok {
+		ordered = append(ordered, FacetTask)
+	}
+	for _, facet := range normalized {
+		if facet == FacetDocument || facet == FacetTask {
+			continue
+		}
+		ordered = append(ordered, facet)
+	}
+	return ordered, nil
+}
+
+func NormalizeRuneProperties(properties map[string]string) (map[string]string, error) {
+	if len(properties) == 0 {
+		return nil, nil
+	}
+	normalized := make(map[string]string, len(properties))
+	for key, value := range properties {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("Rune property name is required")
+		}
+		if _, exists := normalized[key]; exists {
+			return nil, fmt.Errorf("duplicate Rune property name %q", key)
+		}
+		normalized[key] = value
+	}
+	return normalized, nil
+}
+
+func NormalizeRuneFacetProperties(properties map[RuneFacet]map[string]string, facets []RuneFacet) (map[RuneFacet]map[string]string, error) {
+	if len(properties) == 0 {
+		return nil, nil
+	}
+	active := make(map[RuneFacet]struct{}, len(facets))
+	for _, facet := range facets {
+		active[facet] = struct{}{}
+	}
+	normalized := make(map[RuneFacet]map[string]string, len(properties))
+	for facet, values := range properties {
+		normalizedFacet, err := NormalizeRuneFacet(string(facet))
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := active[normalizedFacet]; !ok {
+			return nil, fmt.Errorf("Rune properties reference inactive facet %q", normalizedFacet)
+		}
+		if _, exists := normalized[normalizedFacet]; exists {
+			return nil, fmt.Errorf("duplicate Rune property facet %q", normalizedFacet)
+		}
+		normalizedValues, err := NormalizeRuneProperties(values)
+		if err != nil {
+			return nil, fmt.Errorf("normalize Rune properties for facet %q: %w", normalizedFacet, err)
+		}
+		if len(normalizedValues) > 0 {
+			normalized[normalizedFacet] = normalizedValues
 		}
 	}
 	return normalized, nil
@@ -286,11 +360,20 @@ type Update struct {
 	AppendBody       *string
 	Heading          *string
 	Tags             *[]string
+	Facets           *[]RuneFacet
+	PropertyChanges  []RunePropertyChange
 	Status           *Status
 	State            *RuneState
 	Priority         *int
 	ParentID         *string
 	SiblingOrder     *int
+}
+
+type RunePropertyChange struct {
+	Facet  RuneFacet `json:"facet,omitempty"`
+	Key    string    `json:"key"`
+	Value  string    `json:"value,omitempty"`
+	Delete bool      `json:"delete,omitempty"`
 }
 
 type RuneUpdate = Update
@@ -642,12 +725,77 @@ func (e Entity) IsTask() bool {
 	return e.HasFacet(FacetTask)
 }
 
+func (e *Entity) ApplyPropertyChanges(changes []RunePropertyChange) error {
+	if changes == nil {
+		return nil
+	}
+	if e.Properties == nil {
+		e.Properties = make(map[string]string)
+	}
+	if e.FacetProperties == nil {
+		e.FacetProperties = make(map[RuneFacet]map[string]string)
+	}
+	for _, change := range changes {
+		key := strings.TrimSpace(change.Key)
+		if key == "" {
+			return errors.New("Rune property name is required")
+		}
+		facet := RuneFacet(strings.TrimSpace(string(change.Facet)))
+		if facet != "" {
+			normalizedFacet, err := NormalizeRuneFacet(string(facet))
+			if err != nil {
+				return err
+			}
+			facet = normalizedFacet
+			if !change.Delete && !e.HasFacet(facet) {
+				return fmt.Errorf("Rune property references inactive facet %q", facet)
+			}
+		}
+		if facet == "" {
+			if change.Delete {
+				delete(e.Properties, key)
+			} else {
+				e.Properties[key] = change.Value
+			}
+			continue
+		}
+		values := e.FacetProperties[facet]
+		if values == nil {
+			values = make(map[string]string)
+			e.FacetProperties[facet] = values
+		}
+		if change.Delete {
+			delete(values, key)
+		} else {
+			values[key] = change.Value
+		}
+		if len(values) == 0 {
+			delete(e.FacetProperties, facet)
+		}
+	}
+	if len(e.Properties) == 0 {
+		e.Properties = nil
+	}
+	if len(e.FacetProperties) == 0 {
+		e.FacetProperties = nil
+	}
+	return nil
+}
+
 func (e *Entity) Normalize() error {
 	facets, err := NormalizeRuneFacets(e.FacetSet, e.Kind)
 	if err != nil {
 		return err
 	}
 	e.FacetSet = facets
+	e.Properties, err = NormalizeRuneProperties(e.Properties)
+	if err != nil {
+		return err
+	}
+	e.FacetProperties, err = NormalizeRuneFacetProperties(e.FacetProperties, e.FacetSet)
+	if err != nil {
+		return err
+	}
 	stateWasExplicit := e.State != ""
 	if e.State == "" {
 		e.State = RuneStateFromStatus(e.Status, e.Kind)
@@ -682,9 +830,18 @@ func (e Entity) Validate() error {
 		return errors.New("Rune cannot be its own parent")
 	}
 	if len(e.FacetSet) > 0 {
-		if _, err := NormalizeRuneFacets(e.FacetSet, e.Kind); err != nil {
+		facets, err := NormalizeRuneFacets(e.FacetSet, e.Kind)
+		if err != nil {
 			return err
 		}
+		if _, err := NormalizeRuneFacetProperties(e.FacetProperties, facets); err != nil {
+			return err
+		}
+	} else if _, err := NormalizeRuneFacetProperties(e.FacetProperties, e.Facets()); err != nil {
+		return err
+	}
+	if _, err := NormalizeRuneProperties(e.Properties); err != nil {
+		return err
 	}
 	if e.State != "" {
 		if _, err := NormalizeRuneState(string(e.State)); err != nil {

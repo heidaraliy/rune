@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -738,7 +739,7 @@ func (m Model) renderEntityDetail(width, height int) []string {
 	lines := []string{
 		strings.ToUpper(string(entity.Kind)) + "  " + entity.ID,
 		"state: " + runeStateOrLegacy(*entity),
-		"status: " + statusOrNote(*entity),
+		"status: " + statusOrNote(*entity) + " · facets: " + strings.Join(runeFacetNames(entity.Facets()), ", "),
 		fmt.Sprintf("revision: %d", entity.Revision),
 	}
 	if entity.DeletedAt != nil {
@@ -763,6 +764,7 @@ func (m Model) renderEntityDetail(width, height int) []string {
 			lines = append(lines, fmt.Sprintf("%s -> %s", link.Kind, domain.DisplayID(other)))
 		}
 	}
+	lines = append(lines, runePropertyLines(*entity)...)
 	if m.detailError != "" {
 		lines = append(lines, "", "Error: "+m.detailError)
 	}
@@ -961,6 +963,46 @@ func runeStateOrLegacy(entity domain.Entity) string {
 		return string(entity.State)
 	}
 	return string(domain.RuneStateFromStatus(entity.Status, entity.Kind))
+}
+
+func runeFacetNames(facets []domain.RuneFacet) []string {
+	names := make([]string, len(facets))
+	for index, facet := range facets {
+		names[index] = string(facet)
+	}
+	return names
+}
+
+func runePropertyLines(entity domain.Entity) []string {
+	lines := make([]string, 0, len(entity.Properties)+len(entity.FacetProperties))
+	keys := make([]string, 0, len(entity.Properties))
+	for key := range entity.Properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("property: %s=%s", key, entity.Properties[key]))
+	}
+	facetNames := make([]string, 0, len(entity.FacetProperties))
+	for facet := range entity.FacetProperties {
+		facetNames = append(facetNames, string(facet))
+	}
+	sort.Strings(facetNames)
+	for _, facetName := range facetNames {
+		values := entity.FacetProperties[domain.RuneFacet(facetName)]
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			lines = append(lines, fmt.Sprintf("property: %s.%s=%s", facetName, key, values[key]))
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return append([]string{"properties:"}, lines...)
 }
 
 func captureStatus(kind domain.Kind) domain.Status {

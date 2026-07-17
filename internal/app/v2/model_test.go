@@ -42,7 +42,16 @@ func press(model Model, msg tea.Msg) Model {
 func TestModelRendersWorkspaceLinksWithinCompactWidth(t *testing.T) {
 	model, service := testModel(t)
 	ctx := context.Background()
-	note, err := service.Create(ctx, domain.Entity{Kind: domain.KindNote, Project: "rune", Title: "architecture map", Body: "shared context"})
+	note, err := service.Create(ctx, domain.Entity{
+		Kind:     domain.KindNote,
+		Project:  "rune",
+		Title:    "architecture map",
+		Body:     "shared context",
+		FacetSet: []domain.RuneFacet{"proposal"},
+		FacetProperties: map[domain.RuneFacet]map[string]string{
+			"proposal": {"decision": "pending"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +77,12 @@ func TestModelRendersWorkspaceLinksWithinCompactWidth(t *testing.T) {
 		t.Fatalf("runs from another project leaked into view: %#v", model.runs)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if err := model.reloadKeeping(note.ID); err != nil {
+		t.Fatal(err)
+	}
 	model = press(model, tea.WindowSizeMsg{Width: 72, Height: 20})
 	view := model.View()
-	for _, want := range []string{"Rune 2", "connect ideas", "archi", "references", "workspace:local"} {
+	for _, want := range []string{"Rune 2", "conne", "archi", "references", "proposal", "decision=pending", "workspace:local"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

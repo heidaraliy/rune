@@ -179,6 +179,75 @@ func TestRuneLifecycleStateIsStoredForNotesAndTasks(t *testing.T) {
 	}
 }
 
+func TestRuneCustomFacetsAndPropertiesRoundTripWithoutSchemaMigration(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Rune{
+		Kind:        domain.KindNote,
+		WorkspaceID: "local",
+		Title:       "proposal",
+		FacetSet:    []domain.RuneFacet{"proposal"},
+		Properties:  map[string]string{"audience": "team"},
+		FacetProperties: map[domain.RuneFacet]map[string]string{
+			"proposal": {"decision": "pending"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, note.ID, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HasFacet("proposal") || got.Properties["audience"] != "team" || got.FacetProperties["proposal"]["decision"] != "pending" {
+		t.Fatalf("stored custom Rune = %#v", got)
+	}
+	var encoded string
+	if err := store.db.QueryRow("SELECT properties_json FROM entities WHERE id=?", note.ID).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(encoded, `"common"`) || !strings.Contains(encoded, `"facets"`) {
+		t.Fatalf("property envelope = %q", encoded)
+	}
+
+	updated, err := store.Update(ctx, note.ID, "local", domain.RuneUpdate{
+		ExpectedRevision: note.Revision,
+		PropertyChanges: []domain.RunePropertyChange{
+			{Facet: "proposal", Key: "decision", Value: "accepted"},
+			{Key: "owner", Value: "codex"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Revision != 2 || updated.FacetProperties["proposal"]["decision"] != "accepted" || updated.Properties["owner"] != "codex" {
+		t.Fatalf("updated custom Rune = %#v", updated)
+	}
+	removedFacetProperties := []domain.RuneFacet{}
+	updated, err = store.Update(ctx, note.ID, "local", domain.RuneUpdate{
+		ExpectedRevision: updated.Revision,
+		Facets:           &removedFacetProperties,
+		PropertyChanges:  []domain.RunePropertyChange{{Facet: "proposal", Key: "decision", Delete: true}},
+	})
+	if err != nil || updated.HasFacet("proposal") || len(updated.FacetProperties) != 0 {
+		t.Fatalf("removed custom facet = %#v, err=%v", updated, err)
+	}
+	if _, err := store.Update(ctx, note.ID, "local", domain.RuneUpdate{
+		ExpectedRevision: updated.Revision,
+		PropertyChanges:  []domain.RunePropertyChange{{Facet: "task", Key: "assignee", Value: "agent"}},
+	}); err == nil {
+		t.Fatal("inactive facet property should fail")
+	}
+
+	if _, err := store.db.ExecContext(ctx, "UPDATE entities SET properties_json=? WHERE id=?", `{"facets":"legacy","audience":"legacy"}`, note.ID); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.Get(ctx, note.ID, "local")
+	if err != nil || legacy.Properties["audience"] != "legacy" || legacy.Properties["facets"] != "legacy" {
+		t.Fatalf("legacy property decode = %#v, err=%v", legacy, err)
+	}
+}
+
 func TestRuneQueryFiltersAndOrdersChildren(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

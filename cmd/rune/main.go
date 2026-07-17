@@ -440,9 +440,14 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
 	order := fs.Int("order", 0, "sibling order; zero appends")
 	state := fs.String("state", "", "Rune state: draft, ready, in_progress, complete, blocked, review, or failed")
+	facets := fs.String("facets", "", "comma-separated Rune facets")
+	var properties repeatedFlag
+	var facetProperties repeatedFlag
+	fs.Var(&properties, "property", "common Rune property key=value; repeatable")
+	fs.Var(&facetProperties, "facet-property", "facet-scoped property facet.key=value; repeatable")
 	fromStdin := fs.Bool("stdin", false, "read body from stdin")
 	asNote := fs.Bool("note", false, "capture a note instead of a task")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true})
 	if err != nil {
 		return err
 	}
@@ -479,6 +484,42 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 	if err != nil {
 		return err
 	}
+	var facetSet []domain.RuneFacet
+	if strings.TrimSpace(*facets) != "" {
+		requestedFacets := make([]domain.RuneFacet, 0, len(splitCSV(*facets)))
+		for _, facet := range splitCSV(*facets) {
+			requestedFacets = append(requestedFacets, domain.RuneFacet(facet))
+		}
+		facetSet, err = domain.NormalizeRuneFacets(requestedFacets, kind)
+		if err != nil {
+			return err
+		}
+	}
+	commonProperties := make(map[string]string)
+	for _, assignment := range properties {
+		key, value, err := parsePropertyAssignment(assignment)
+		if err != nil {
+			return err
+		}
+		commonProperties[key] = value
+	}
+	facetPropertyValues := make(map[domain.RuneFacet]map[string]string)
+	for _, assignment := range facetProperties {
+		facet, key, value, err := parseFacetPropertyAssignment(assignment)
+		if err != nil {
+			return err
+		}
+		if facetPropertyValues[facet] == nil {
+			facetPropertyValues[facet] = make(map[string]string)
+		}
+		facetPropertyValues[facet][key] = value
+	}
+	if len(commonProperties) == 0 {
+		commonProperties = nil
+	}
+	if len(facetPropertyValues) == 0 {
+		facetPropertyValues = nil
+	}
 	entity, err := service.Create(context.Background(), domain.Entity{
 		Kind:     kind,
 		Project:  scope.Project,
@@ -491,10 +532,13 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 			}
 			return 0
 		}(),
-		Status:    status,
-		State:     parsedState,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		Status:          status,
+		State:           parsedState,
+		FacetSet:        facetSet,
+		Properties:      commonProperties,
+		FacetProperties: facetPropertyValues,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
 	})
 	if err != nil {
 		return err
@@ -637,6 +681,7 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	}
 	fmt.Fprintf(stdout, "ID: %s\nRef: %s\nKind: %s\nState: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Reference(), entity.Kind, entity.State, entity.Title, entity.Revision)
 	fmt.Fprintf(stdout, "Facets: %s\n", strings.Join(runeFacetNames(entity.Facets()), ", "))
+	printRuneProperties(stdout, entity)
 	if entity.Project != "" {
 		fmt.Fprintf(stdout, "Project: %s\n", entity.Project)
 	}
@@ -676,10 +721,19 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
 	order := fs.Int("order", 0, "sibling order")
 	state := fs.String("state", "", "Rune lifecycle state")
+	facets := fs.String("facets", "", "comma-separated Rune facets")
+	var properties repeatedFlag
+	var facetProperties repeatedFlag
+	var removeProperties repeatedFlag
+	var removeFacetProperties repeatedFlag
+	fs.Var(&properties, "property", "set common Rune property key=value; repeatable")
+	fs.Var(&facetProperties, "facet-property", "set facet property facet.key=value; repeatable")
+	fs.Var(&removeProperties, "remove-property", "remove common Rune property key; repeatable")
+	fs.Var(&removeFacetProperties, "remove-facet-property", "remove facet property facet.key; repeatable")
 	status := fs.String("status", "", "task status")
 	priority := fs.Int("priority", 0, "priority")
 	revision := fs.Int64("revision", 0, "expected revision")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "state": true, "status": true, "priority": true, "revision": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true, "remove-property": true, "remove-facet-property": true, "status": true, "priority": true, "revision": true})
 	if err != nil {
 		return err
 	}
@@ -714,6 +768,22 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 		update.SiblingOrder = order
 		changed = true
 	}
+	if provided["facets"] {
+		parsed := splitCSV(*facets)
+		update.Facets = &[]domain.RuneFacet{}
+		for _, facet := range parsed {
+			*update.Facets = append(*update.Facets, domain.RuneFacet(facet))
+		}
+		changed = true
+	}
+	if len(properties) > 0 || len(facetProperties) > 0 || len(removeProperties) > 0 || len(removeFacetProperties) > 0 {
+		changes, err := propertyChangesFromFlags(properties, facetProperties, removeProperties, removeFacetProperties)
+		if err != nil {
+			return err
+		}
+		update.PropertyChanges = changes
+		changed = true
+	}
 	if provided["state"] {
 		parsed, err := domain.NormalizeRuneState(*state)
 		if err != nil {
@@ -735,7 +805,7 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 		changed = true
 	}
 	if !changed {
-		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --state, --status, or --priority")
+		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --facets, --property, --facet-property, --remove-property, --remove-facet-property, --state, --status, or --priority")
 	}
 	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
 	if err != nil {
@@ -1818,6 +1888,99 @@ func splitCSV(value string) []string {
 	return strings.Split(value, ",")
 }
 
+type repeatedFlag []string
+
+func (f *repeatedFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatedFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func parsePropertyAssignment(value string) (string, string, error) {
+	separator := strings.IndexByte(value, '=')
+	if separator < 1 {
+		return "", "", fmt.Errorf("property %q must use key=value", value)
+	}
+	key := strings.TrimSpace(value[:separator])
+	if key == "" {
+		return "", "", errors.New("Rune property name is required")
+	}
+	return key, value[separator+1:], nil
+}
+
+func parseFacetPropertyAssignment(value string) (domain.RuneFacet, string, string, error) {
+	assignmentKey, propertyValue, err := parsePropertyAssignment(value)
+	if err != nil {
+		return "", "", "", err
+	}
+	separator := strings.IndexByte(assignmentKey, '.')
+	if separator < 1 || separator == len(assignmentKey)-1 {
+		return "", "", "", fmt.Errorf("facet property %q must use facet.key=value", value)
+	}
+	facet, err := domain.NormalizeRuneFacet(assignmentKey[:separator])
+	if err != nil {
+		return "", "", "", err
+	}
+	key := strings.TrimSpace(assignmentKey[separator+1:])
+	if key == "" {
+		return "", "", "", errors.New("Rune property name is required")
+	}
+	return facet, key, propertyValue, nil
+}
+
+func parseFacetPropertyKey(value string) (domain.RuneFacet, string, error) {
+	key := strings.TrimSpace(value)
+	separator := strings.IndexByte(key, '.')
+	if separator < 1 || separator == len(key)-1 {
+		return "", "", fmt.Errorf("facet property %q must use facet.key", value)
+	}
+	facet, err := domain.NormalizeRuneFacet(key[:separator])
+	if err != nil {
+		return "", "", err
+	}
+	propertyKey := strings.TrimSpace(key[separator+1:])
+	if propertyKey == "" {
+		return "", "", errors.New("Rune property name is required")
+	}
+	return facet, propertyKey, nil
+}
+
+func propertyChangesFromFlags(properties, facetProperties, removals, facetRemovals []string) ([]domain.RunePropertyChange, error) {
+	changes := make([]domain.RunePropertyChange, 0, len(properties)+len(facetProperties)+len(removals)+len(facetRemovals))
+	for _, assignment := range properties {
+		key, value, err := parsePropertyAssignment(assignment)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Key: key, Value: value})
+	}
+	for _, assignment := range facetProperties {
+		facet, key, value, err := parseFacetPropertyAssignment(assignment)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Facet: facet, Key: key, Value: value})
+	}
+	for _, key := range removals {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("Rune property name is required")
+		}
+		changes = append(changes, domain.RunePropertyChange{Key: key, Delete: true})
+	}
+	for _, key := range facetRemovals {
+		facet, propertyKey, err := parseFacetPropertyKey(key)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Facet: facet, Key: propertyKey, Delete: true})
+	}
+	return changes, nil
+}
+
 func readAll(r io.Reader) (string, error) {
 	if r == nil {
 		return "", nil
@@ -1837,6 +2000,33 @@ func runeFacetNames(facets []domain.RuneFacet) []string {
 		names[index] = string(facet)
 	}
 	return names
+}
+
+func printRuneProperties(w io.Writer, entity domain.Entity) {
+	propertyKeys := make([]string, 0, len(entity.Properties))
+	for key := range entity.Properties {
+		propertyKeys = append(propertyKeys, key)
+	}
+	sort.Strings(propertyKeys)
+	for _, key := range propertyKeys {
+		fmt.Fprintf(w, "Property: %s=%s\n", key, entity.Properties[key])
+	}
+	facetNames := make([]string, 0, len(entity.FacetProperties))
+	for facet := range entity.FacetProperties {
+		facetNames = append(facetNames, string(facet))
+	}
+	sort.Strings(facetNames)
+	for _, facetName := range facetNames {
+		values := entity.FacetProperties[domain.RuneFacet(facetName)]
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(w, "Facet property: %s.%s=%s\n", facetName, key, values[key])
+		}
+	}
 }
 
 func printItems(w io.Writer, home string, items []*core.Item) {

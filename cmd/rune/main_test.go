@@ -228,6 +228,51 @@ func TestRunV2LifecycleStateWorksForNotesAndTasks(t *testing.T) {
 	}
 }
 
+func TestRunV2CustomFacetsAndProperties(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{
+		"v2", "capture", "proposal note", "--note", "--facets", "proposal,research",
+		"--property", "audience=team", "--facet-property", "proposal.decision=pending", "--db", db,
+	}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", noteID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Facets: document, proposal, research", "Property: audience=team", "Facet property: proposal.decision=pending"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("custom show missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{
+		"v2", "edit", noteID, "--property", "owner=codex", "--remove-property", "audience",
+		"--facet-property", "proposal.decision=accepted", "--db", db,
+	}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--json", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom JSON list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"facets": [`, `"properties": {`, `"owner": "codex"`, `"facet_properties": {`, `"proposal": {`, `"decision": "accepted"`} {
+		if !strings.Contains(stdout.String(), want) || strings.Contains(stdout.String(), "audience") {
+			t.Fatalf("custom JSON list missing %q or retained removed property: %s", want, stdout.String())
+		}
+	}
+}
+
 func TestRunV2SyncReportsEditsAndReversibleTombstones(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
