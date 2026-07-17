@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,10 @@ import (
 )
 
 type Kind string
+
+// RuneKind is the canonical product vocabulary. Kind remains as a source-
+// compatible alias for the transitional structured store and existing clients.
+type RuneKind = Kind
 
 const (
 	KindNote Kind = "note"
@@ -49,6 +54,7 @@ type Entity struct {
 	Status       Status            `json:"status,omitempty"`
 	Priority     int               `json:"priority,omitempty"`
 	ParentID     string            `json:"parent_id,omitempty"`
+	SiblingOrder int               `json:"sibling_order,omitempty"`
 	SourceNoteID string            `json:"source_note_id,omitempty"`
 	LegacyID     string            `json:"legacy_id,omitempty"`
 	LegacySource string            `json:"legacy_source,omitempty"`
@@ -57,6 +63,67 @@ type Entity struct {
 	FinishedAt   *time.Time        `json:"finished_at,omitempty"`
 	Revision     int64             `json:"revision"`
 	DeletedAt    *time.Time        `json:"deleted_at,omitempty"`
+}
+
+// Rune is the canonical name for the durable workspace object. Entity is kept
+// as the compatibility name while the SQLite table and v2 callers migrate.
+type Rune = Entity
+
+type RuneFacet string
+
+const (
+	FacetDocument RuneFacet = "document"
+	FacetTask     RuneFacet = "task"
+)
+
+func (e Entity) Facets() []RuneFacet {
+	if e.Kind == KindTask {
+		return []RuneFacet{FacetDocument, FacetTask}
+	}
+	return []RuneFacet{FacetDocument}
+}
+
+func (e Entity) Reference() string {
+	return RuneReference(e.ID)
+}
+
+func RuneReference(id string) string {
+	return "rune://" + strings.TrimSpace(id)
+}
+
+// ResolveRuneID accepts both the existing short/full ID forms and a stable
+// rune:// reference so clients can share identifiers without a format fork.
+func ResolveRuneID(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(value, "rune://") {
+		value = strings.TrimPrefix(value, "rune://")
+		if value == "" || strings.ContainsAny(value, "/?#") {
+			return "", fmt.Errorf("invalid Rune reference %q", value)
+		}
+		return value, nil
+	}
+	if strings.Contains(value, "://") {
+		return "", fmt.Errorf("unsupported Rune reference %q", value)
+	}
+	return value, nil
+}
+
+// MarshalJSON keeps the transitional kind field while exposing stable client
+// fields that do not require new storage columns.
+func (e Entity) MarshalJSON() ([]byte, error) {
+	type entityJSON Entity
+	return json.Marshal(struct {
+		entityJSON
+		Ref    string      `json:"ref"`
+		Facets []RuneFacet `json:"facets"`
+	}{
+		entityJSON: entityJSON(e),
+		Ref:        e.Reference(),
+		Facets:     e.Facets(),
+	})
 }
 
 type Update struct {
@@ -68,6 +135,34 @@ type Update struct {
 	Tags             *[]string
 	Status           *Status
 	Priority         *int
+	ParentID         *string
+	SiblingOrder     *int
+}
+
+type RuneUpdate = Update
+
+type RuneSortField string
+
+const (
+	RuneSortUpdatedAt RuneSortField = "updated_at"
+	RuneSortCreatedAt RuneSortField = "created_at"
+	RuneSortTitle     RuneSortField = "title"
+	RuneSortPriority  RuneSortField = "priority"
+	RuneSortStatus    RuneSortField = "status"
+	RuneSortOrder     RuneSortField = "sibling_order"
+)
+
+func NormalizeRuneSort(value string) (RuneSortField, error) {
+	sort := RuneSortField(strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "-", "_"))))
+	if sort == "" {
+		return "", nil
+	}
+	switch sort {
+	case RuneSortUpdatedAt, RuneSortCreatedAt, RuneSortTitle, RuneSortPriority, RuneSortStatus, RuneSortOrder:
+		return sort, nil
+	default:
+		return "", fmt.Errorf("unknown Rune sort %q", value)
+	}
 }
 
 type ListOptions struct {
@@ -76,8 +171,15 @@ type ListOptions struct {
 	Kind           Kind
 	Status         Status
 	Query          string
+	ParentID       string
+	SortBy         RuneSortField
+	Reverse        bool
+	Limit          int
+	Offset         int
 	IncludeDeleted bool
 }
+
+type RuneQuery = ListOptions
 
 type Link struct {
 	ID          string    `json:"id"`
@@ -397,6 +499,12 @@ func (e Entity) Validate() error {
 	}
 	if strings.TrimSpace(e.Title) == "" {
 		return errors.New("entity title is required")
+	}
+	if e.SiblingOrder < 0 {
+		return errors.New("Rune sibling order cannot be negative")
+	}
+	if e.ParentID == e.ID && e.ParentID != "" {
+		return errors.New("Rune cannot be its own parent")
 	}
 	if e.IsTask() {
 		if e.Status == "" {

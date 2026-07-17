@@ -11,28 +11,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
+	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/domain"
 )
 
-type Service interface {
-	Create(context.Context, domain.Entity) (domain.Entity, error)
-	Get(context.Context, string) (domain.Entity, error)
-	Update(context.Context, string, domain.Update) (domain.Entity, error)
-	Delete(context.Context, string, int64) (domain.Entity, error)
-	Restore(context.Context, string, int64) (domain.Entity, error)
-	List(context.Context, domain.ListOptions) ([]domain.Entity, error)
-	Links(context.Context, string) ([]domain.Link, error)
-	QueueRun(context.Context, string, string, string, domain.PermissionPolicy) (domain.Run, error)
-	ExecuteRun(context.Context, string) (domain.Run, error)
-	CancelRun(context.Context, string) (domain.Run, error)
-	Runs(context.Context, domain.RunListOptions) ([]domain.Run, error)
-	RunEvents(context.Context, string) ([]domain.RunEvent, error)
-	Artifacts(context.Context, string) ([]domain.Artifact, error)
-	AllArtifacts(context.Context) ([]domain.Artifact, error)
-	ReadArtifact(context.Context, string) (domain.Artifact, []byte, error)
-	SyncStatus(context.Context) (domain.SyncStatus, error)
-	Conflicts(context.Context) ([]domain.Conflict, error)
-}
+// Service is retained as a local name for compatibility with existing TUI
+// tests, but the contract is owned by the application package and shared with
+// CLI, app, and future sync clients.
+type Service = application.RuneClient
 
 type view int
 

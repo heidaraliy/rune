@@ -437,9 +437,11 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
 	body := fs.String("body", "", "body text")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	order := fs.Int("order", 0, "sibling order; zero appends")
 	fromStdin := fs.Bool("stdin", false, "read body from stdin")
 	asNote := fs.Bool("note", false, "capture a note instead of a task")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true})
 	if err != nil {
 		return err
 	}
@@ -458,6 +460,14 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 		return err
 	}
 	defer closeStore()
+	parentID := ""
+	if strings.TrimSpace(*parent) != "" {
+		parentRune, err := service.Get(context.Background(), *parent)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		parentID = parentRune.ID
+	}
 	kind := domain.KindTask
 	status := domain.StatusDraft
 	if *asNote {
@@ -465,10 +475,17 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 		status = ""
 	}
 	entity, err := service.Create(context.Background(), domain.Entity{
-		Kind:      kind,
-		Project:   scope.Project,
-		Title:     core.DecodeEscapes(strings.Join(pos, " ")),
-		Body:      core.DecodeEscapes(*body),
+		Kind:     kind,
+		Project:  scope.Project,
+		Title:    core.DecodeEscapes(strings.Join(pos, " ")),
+		Body:     core.DecodeEscapes(*body),
+		ParentID: parentID,
+		SiblingOrder: func() int {
+			if *order > 0 {
+				return *order
+			}
+			return 0
+		}(),
 		Status:    status,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -489,11 +506,14 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	kind := fs.String("kind", "", "note or task")
 	status := fs.String("status", "", "task status")
 	query := fs.String("query", "", "search title and body")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	sortBy := fs.String("sort", "", "updated_at, created_at, title, priority, status, or sibling_order")
+	reverse := fs.Bool("reverse", false, "reverse sort direction")
 	all := fs.Bool("all", false, "all projects in the workspace")
 	global := fs.Bool("global", false, "all projects in the workspace")
 	deleted := fs.Bool("deleted", false, "include deleted tombstones")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true, "deleted": false})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true, "parent": true, "sort": true, "deleted": false})
 	if err != nil {
 		return err
 	}
@@ -523,6 +543,21 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 		}
 		options.Status = parsed
 	}
+	if *parent != "" {
+		parentRune, err := service.Get(context.Background(), *parent)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		options.ParentID = parentRune.ID
+	}
+	if *sortBy != "" {
+		parsed, err := domain.NormalizeRuneSort(*sortBy)
+		if err != nil {
+			return err
+		}
+		options.SortBy = parsed
+	}
+	options.Reverse = *reverse
 	items, err := service.List(context.Background(), options)
 	if err != nil {
 		return err
@@ -583,7 +618,7 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "ID: %s\nKind: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Kind, entity.Title, entity.Revision)
+	fmt.Fprintf(stdout, "ID: %s\nRef: %s\nKind: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Reference(), entity.Kind, entity.Title, entity.Revision)
 	if entity.Project != "" {
 		fmt.Fprintf(stdout, "Project: %s\n", entity.Project)
 	}
@@ -620,10 +655,12 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 	title := fs.String("title", "", "new title")
 	body := fs.String("body", "", "replace body")
 	appendBody := fs.String("end", "", "append body")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	order := fs.Int("order", 0, "sibling order")
 	status := fs.String("status", "", "task status")
 	priority := fs.Int("priority", 0, "priority")
 	revision := fs.Int64("revision", 0, "expected revision")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "status": true, "priority": true, "revision": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "status": true, "priority": true, "revision": true})
 	if err != nil {
 		return err
 	}
@@ -636,6 +673,7 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 	})
 	update := domain.Update{ExpectedRevision: *revision}
 	changed := false
+	parentID := ""
 	if provided["title"] {
 		update.Title = stringUpdate(core.DecodeEscapes(*title))
 		changed = true
@@ -646,6 +684,15 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 	}
 	if provided["end"] {
 		update.AppendBody = stringUpdate(core.DecodeEscapes(*appendBody))
+		changed = true
+	}
+	if provided["parent"] {
+		parentID = strings.TrimSpace(*parent)
+		update.ParentID = &parentID
+		changed = true
+	}
+	if provided["order"] {
+		update.SiblingOrder = order
 		changed = true
 	}
 	if provided["status"] {
@@ -661,13 +708,21 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 		changed = true
 	}
 	if !changed {
-		return errors.New("v2 edit requires --title, --body, --end, --status, or --priority")
+		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --status, or --priority")
 	}
 	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
 	if err != nil {
 		return err
 	}
 	defer closeStore()
+	if provided["parent"] && parentID != "" {
+		parentRune, err := service.Get(context.Background(), parentID)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		parentID = parentRune.ID
+		update.ParentID = &parentID
+	}
 	entity, err := service.Update(context.Background(), pos[0], update)
 	if err != nil {
 		return err

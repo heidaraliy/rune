@@ -25,7 +25,7 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestOpenUpgradesSlice2DatabaseToSlice4Schema(t *testing.T) {
+func TestOpenUpgradesSlice4DatabaseToSlice5Schema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rune-v2.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -33,8 +33,32 @@ func TestOpenUpgradesSlice2DatabaseToSlice4Schema(t *testing.T) {
 	}
 	for _, statement := range []string{
 		"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
-		"CREATE TABLE entities (id TEXT PRIMARY KEY)",
-		"INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-07-01T00:00:00Z')",
+		`CREATE TABLE entities (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			project TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			heading TEXT NOT NULL DEFAULT '',
+			tags_json TEXT NOT NULL DEFAULT '[]',
+			properties_json TEXT NOT NULL DEFAULT '{}',
+			status TEXT NOT NULL DEFAULT '',
+			priority INTEGER NOT NULL DEFAULT 0,
+			parent_id TEXT,
+			source_note_id TEXT,
+			legacy_id TEXT NOT NULL DEFAULT '',
+			legacy_source TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			finished_at TEXT,
+			revision INTEGER NOT NULL DEFAULT 1,
+			deleted_at TEXT
+		)`,
+		`INSERT INTO entities(id, kind, workspace_id, title, created_at, updated_at)
+			VALUES ('old-a', 'note', 'local', 'old a', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'),
+			       ('old-b', 'note', 'local', 'old b', '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z')`,
+		"INSERT INTO schema_migrations(version, applied_at) VALUES (4, '2026-07-01T00:00:00Z')",
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -52,8 +76,18 @@ func TestOpenUpgradesSlice2DatabaseToSlice4Schema(t *testing.T) {
 	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("schema version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("schema version = %d, want 5", version)
+	}
+	var firstOrder, secondOrder int
+	if err := store.db.QueryRow("SELECT sibling_order FROM entities WHERE id='old-a'").Scan(&firstOrder); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT sibling_order FROM entities WHERE id='old-b'").Scan(&secondOrder); err != nil {
+		t.Fatal(err)
+	}
+	if firstOrder != 1 || secondOrder != 2 {
+		t.Fatalf("migrated sibling orders = %d, %d; want 1, 2", firstOrder, secondOrder)
 	}
 }
 
@@ -81,6 +115,63 @@ func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
 	}
 	if got.Revision != 1 || got.ParentID != note.ID {
 		t.Fatalf("task = %#v", got)
+	}
+	if got.SiblingOrder != 1 {
+		t.Fatalf("task sibling order = %d, want 1", got.SiblingOrder)
+	}
+}
+
+func TestRuneQueryFiltersAndOrdersChildren(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	parent, err := store.Create(ctx, domain.Rune{Kind: domain.KindNote, WorkspaceID: "local", Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", ParentID: domain.RuneReference(parent.ID), Title: "first", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", ParentID: parent.ID, Title: "second", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := store.List(ctx, domain.RuneQuery{WorkspaceID: "local", ParentID: domain.RuneReference(parent.ID), SortBy: domain.RuneSortOrder, Reverse: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 || children[0].ID != first.ID || children[1].ID != second.ID {
+		t.Fatalf("children = %#v", children)
+	}
+	if children[0].SiblingOrder != 1 || children[1].SiblingOrder != 2 {
+		t.Fatalf("child order = %#v", children)
+	}
+	limited, err := store.List(ctx, domain.RuneQuery{WorkspaceID: "local", ParentID: parent.ID, SortBy: domain.RuneSortOrder, Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 || limited[0].ID != second.ID {
+		t.Fatalf("limited children = %#v", limited)
+	}
+}
+
+func TestRuneParentReferencesRejectCyclesAndAcceptStableRefs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	parent, err := store.Create(ctx, domain.Rune{Kind: domain.KindNote, WorkspaceID: "local", Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", ParentID: parent.ID, Title: "child", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Get(ctx, domain.RuneReference(child.ID), "local"); err != nil || got.ID != child.ID {
+		t.Fatalf("get by Rune ref = %#v, err=%v", got, err)
+	}
+	parentID := child.ID
+	if _, err := store.Update(ctx, parent.ID, "local", domain.RuneUpdate{ExpectedRevision: parent.Revision, ParentID: &parentID}); err == nil || !strings.Contains(err.Error(), "cycles") {
+		t.Fatalf("cycle update error = %v", err)
 	}
 }
 

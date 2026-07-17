@@ -74,6 +74,10 @@ by default, and the preview does not sync to the cloud yet:
 ```sh
 rune v2 capture "design sync" --project rune
 rune v2 list --project rune
+rune v2 capture "break proposal into a task" --parent rune://<parent-id>
+rune v2 list --parent rune://<parent-id> --sort sibling_order
+rune v2 show rune://<id>
+rune v2 list --json
 rune v2 import path/to/notes.md --project rune --db /path/to/rune-v2.db
 rune v2 queue <task-id>
 rune v2 run <run-id>

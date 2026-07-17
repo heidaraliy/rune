@@ -131,6 +131,63 @@ func TestRunV2LocalStructuredCaptureLinkAndSearch(t *testing.T) {
 	}
 }
 
+func TestRunV2HierarchyAndStableRuneReferences(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "parent idea", "--note", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("parent capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	parentID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "first child", "--parent", "rune://" + parentID, "--order", "1", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("first child capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	firstID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "second child", "--parent", parentID, "--order", "2", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("second child capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	secondID := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--parent", "rune://" + parentID, "--sort", "sibling_order", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("hierarchy list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if first, second := strings.Index(stdout.String(), "first child"), strings.Index(stdout.String(), "second child"); first < 0 || second < 0 || first > second {
+		t.Fatalf("hierarchy list order = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", "rune://" + firstID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("stable ref show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Ref: rune://"+firstID) {
+		t.Fatalf("stable ref show = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--parent", parentID, "--sort", "sibling_order", "--json", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("JSON hierarchy list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"ref": "rune://`, `"facets": [`, `"parent_id": "`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("JSON hierarchy list missing %s: %q", want, stdout.String())
+		}
+	}
+	if !strings.Contains(stdout.String(), secondID) {
+		t.Fatalf("JSON hierarchy list missing second child %q", stdout.String())
+	}
+}
+
 func TestRunV2SyncReportsEditsAndReversibleTombstones(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

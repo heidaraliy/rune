@@ -33,6 +33,10 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	child, err := storeA.Create(ctx, domain.Entity{Kind: domain.KindTask, WorkspaceID: "local", ParentID: entity.ID, Title: "shared child", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := []byte("artifact from A")
 	blob, err := blobsA.Put(ctx, content)
 	if err != nil {
@@ -64,7 +68,7 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Pushed != 2 || report.Pulled != 2 || report.Status.PendingChanges != 0 {
+	if report.Pushed != 3 || report.Pulled != 3 || report.Status.PendingChanges != 0 {
 		t.Fatalf("first sync report = %#v", report)
 	}
 
@@ -81,12 +85,16 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Pushed != 0 || report.Pulled != 2 {
+	if report.Pushed != 0 || report.Pulled != 3 {
 		t.Fatalf("second client sync report = %#v", report)
 	}
 	shared, err := storeB.Get(ctx, entity.ID, "local")
 	if err != nil || shared.Title != entity.Title || shared.Body != entity.Body {
 		t.Fatalf("shared entity on B = %#v, err=%v", shared, err)
+	}
+	remoteChild, err := storeB.Get(ctx, child.ID, "local")
+	if err != nil || remoteChild.ParentID != entity.ID || remoteChild.SiblingOrder != child.SiblingOrder {
+		t.Fatalf("shared child on B = %#v, err=%v", remoteChild, err)
 	}
 	remoteArtifact, err := storeB.GetArtifact(ctx, artifactID, "local")
 	if err != nil {

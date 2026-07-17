@@ -358,7 +358,7 @@ func (s *Store) applyRemoteArtifactTx(ctx context.Context, tx *sql.Tx, txChange 
 func scanEntityByIDTx(ctx context.Context, tx *sql.Tx, workspaceID, id string) (domain.Entity, error) {
 	return scanEntity(tx.QueryRowContext(ctx, `SELECT id, kind, workspace_id, project, title, body, heading, tags_json,
 		properties_json, status, priority, parent_id, source_note_id, legacy_id,
-		legacy_source, created_at, updated_at, finished_at, revision, deleted_at
+		legacy_source, created_at, updated_at, finished_at, revision, deleted_at, sibling_order
 		FROM entities WHERE workspace_id=? AND id=?`, workspaceID, id))
 }
 
@@ -389,6 +389,21 @@ func validateEntityReferencesTx(ctx context.Context, tx *sql.Tx, entity domain.E
 		}
 		if workspaceID != entity.WorkspaceID {
 			return fmt.Errorf("remote %s %s belongs to workspace %s, not %s", field, id, workspaceID, entity.WorkspaceID)
+		}
+	}
+	if entity.ParentID != "" {
+		seen := map[string]bool{entity.ID: true}
+		parentID := entity.ParentID
+		for parentID != "" {
+			if seen[parentID] {
+				return errors.New("remote Rune parent hierarchy cannot contain cycles")
+			}
+			seen[parentID] = true
+			var next sql.NullString
+			if err := tx.QueryRowContext(ctx, "SELECT parent_id FROM entities WHERE id=? AND workspace_id=? AND deleted_at IS NULL", parentID, entity.WorkspaceID).Scan(&next); err != nil {
+				return fmt.Errorf("check remote Rune parent hierarchy: %w", err)
+			}
+			parentID = next.String
 		}
 	}
 	return nil
@@ -453,6 +468,11 @@ func validateArtifactReferencesTx(ctx context.Context, tx *sql.Tx, artifact doma
 }
 
 func insertEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error {
+	var err error
+	entity, err = assignSiblingOrderTx(ctx, tx, entity)
+	if err != nil {
+		return err
+	}
 	tags, properties, err := encodeMetadata(entity)
 	if err != nil {
 		return err
@@ -461,13 +481,13 @@ func insertEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error
 		id, kind, workspace_id, project, title, body, heading, tags_json,
 		properties_json, status, priority, parent_id, source_note_id,
 		legacy_id, legacy_source, created_at, updated_at, finished_at,
-		revision, deleted_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		revision, deleted_at, sibling_order
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
 		entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
 		nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource, formatTime(entity.CreatedAt),
 		formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt), entity.Revision,
-		formatOptionalTime(entity.DeletedAt))
+		formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
 	if err != nil {
 		return fmt.Errorf("insert remote entity: %w", err)
 	}
@@ -480,10 +500,10 @@ func updateEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE entities SET kind=?, project=?, title=?, body=?, heading=?, tags_json=?,
-		properties_json=?, status=?, priority=?, parent_id=?, source_note_id=?, legacy_id=?, legacy_source=?,
+		properties_json=?, status=?, priority=?, parent_id=?, sibling_order=?, source_note_id=?, legacy_id=?, legacy_source=?,
 		created_at=?, updated_at=?, finished_at=?, revision=?, deleted_at=? WHERE id=? AND workspace_id=? AND revision=?`,
 		entity.Kind, entity.Project, entity.Title, entity.Body, entity.Heading, tags, properties, entity.Status,
-		entity.Priority, nullString(entity.ParentID), nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
+		entity.Priority, nullString(entity.ParentID), entity.SiblingOrder, nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 		formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt), entity.Revision,
 		formatOptionalTime(entity.DeletedAt), entity.ID, entity.WorkspaceID, entity.Revision-1)
 	if err != nil {

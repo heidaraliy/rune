@@ -326,6 +326,40 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		version = 4
 	}
+	if version < 5 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin Rune hierarchy migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`ALTER TABLE entities ADD COLUMN sibling_order INTEGER NOT NULL DEFAULT 0`,
+			`UPDATE entities AS child SET sibling_order = (
+				SELECT COUNT(*) FROM entities AS sibling
+				WHERE sibling.workspace_id = child.workspace_id
+				  AND ((sibling.parent_id = child.parent_id) OR (sibling.parent_id IS NULL AND child.parent_id IS NULL))
+				  AND (sibling.created_at < child.created_at OR
+					(sibling.created_at = child.created_at AND sibling.id <= child.id))
+			)`,
+			`CREATE INDEX entities_workspace_parent_order ON entities(workspace_id, parent_id, sibling_order, id)`,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)`,
+		}
+		for index, statement := range statements {
+			if index == len(statements)-1 {
+				if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("apply Rune hierarchy migration %d: %w", index+1, err)
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply Rune hierarchy migration %d: %w", index+1, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit Rune hierarchy migration: %w", err)
+		}
+		version = 5
+	}
 	return nil
 }
 
@@ -575,6 +609,12 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 	if err != nil {
 		return domain.Entity{}, err
 	}
+	if entity.ParentID, err = domain.ResolveRuneID(entity.ParentID); err != nil {
+		return domain.Entity{}, err
+	}
+	if entity.SourceNoteID, err = domain.ResolveRuneID(entity.SourceNoteID); err != nil {
+		return domain.Entity{}, err
+	}
 	tags, properties, err := encodeMetadata(entity)
 	if err != nil {
 		return domain.Entity{}, err
@@ -587,18 +627,22 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 		return domain.Entity{}, fmt.Errorf("begin v2 entity create: %w", err)
 	}
 	defer tx.Rollback()
+	entity, err = assignSiblingOrderTx(ctx, tx, entity)
+	if err != nil {
+		return domain.Entity{}, err
+	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO entities(
 			id, kind, workspace_id, project, title, body, heading, tags_json,
 			properties_json, status, priority, parent_id, source_note_id,
 			legacy_id, legacy_source, created_at, updated_at, finished_at,
-			revision, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			revision, deleted_at, sibling_order
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
 		entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
 		nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 		formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt),
-		entity.Revision, formatOptionalTime(entity.DeletedAt))
+		entity.Revision, formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
 	if err != nil {
 		return domain.Entity{}, fmt.Errorf("create %s %s: %w", entity.Kind, entity.ID, err)
 	}
@@ -616,7 +660,10 @@ func (s *Store) Get(ctx context.Context, prefix string, workspaceID string) (dom
 	if err != nil {
 		return domain.Entity{}, err
 	}
-	prefix = strings.TrimSpace(prefix)
+	prefix, err = domain.ResolveRuneID(prefix)
+	if err != nil {
+		return domain.Entity{}, err
+	}
 	var matches []domain.Entity
 	for _, entity := range entities {
 		if prefix == "" || strings.HasPrefix(entity.ID, prefix) {
@@ -638,7 +685,10 @@ func (s *Store) GetIncludingDeleted(ctx context.Context, prefix string, workspac
 	if err != nil {
 		return domain.Entity{}, err
 	}
-	prefix = strings.TrimSpace(prefix)
+	prefix, err = domain.ResolveRuneID(prefix)
+	if err != nil {
+		return domain.Entity{}, err
+	}
 	var matches []domain.Entity
 	for _, entity := range entities {
 		if prefix == "" || strings.HasPrefix(entity.ID, prefix) {
@@ -662,9 +712,9 @@ func (s *Store) List(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Entity, error) {
 	query := `SELECT id, kind, workspace_id, project, title, body, heading, tags_json,
 		properties_json, status, priority, parent_id, source_note_id, legacy_id,
-		legacy_source, created_at, updated_at, finished_at, revision, deleted_at
+		legacy_source, created_at, updated_at, finished_at, revision, deleted_at, sibling_order
 		FROM entities WHERE 1=1`
-	args := make([]any, 0, 6)
+	args := make([]any, 0, 8)
 	if strings.TrimSpace(opts.WorkspaceID) != "" {
 		query += " AND workspace_id = ?"
 		args = append(args, opts.WorkspaceID)
@@ -686,10 +736,64 @@ func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 		needle := "%" + strings.ToLower(strings.TrimSpace(opts.Query)) + "%"
 		args = append(args, needle, needle)
 	}
+	if strings.TrimSpace(opts.ParentID) != "" {
+		parentID, err := domain.ResolveRuneID(opts.ParentID)
+		if err != nil {
+			return nil, err
+		}
+		query += " AND parent_id = ?"
+		args = append(args, parentID)
+	}
 	if !opts.IncludeDeleted {
 		query += " AND deleted_at IS NULL"
 	}
-	query += " ORDER BY updated_at DESC, id ASC"
+	sortBy, err := domain.NormalizeRuneSort(string(opts.SortBy))
+	if err != nil {
+		return nil, err
+	}
+	sortColumn := "updated_at"
+	switch sortBy {
+	case domain.RuneSortCreatedAt:
+		sortColumn = "created_at"
+	case domain.RuneSortTitle:
+		sortColumn = "LOWER(title)"
+	case domain.RuneSortPriority:
+		sortColumn = "priority"
+	case domain.RuneSortStatus:
+		sortColumn = "status"
+	case domain.RuneSortOrder:
+		sortColumn = "sibling_order"
+	}
+	direction := "DESC"
+	if sortBy == domain.RuneSortOrder {
+		direction = "ASC"
+	}
+	if opts.Reverse {
+		if direction == "ASC" {
+			direction = "DESC"
+		} else {
+			direction = "ASC"
+		}
+	}
+	query += " ORDER BY " + sortColumn + " " + direction + ", id ASC"
+	limit := opts.Limit
+	if limit > 1000 {
+		limit = 1000
+	}
+	if limit < 0 || opts.Offset < 0 {
+		return nil, errors.New("Rune query limit and offset cannot be negative")
+	}
+	if opts.Offset > 0 && limit == 0 {
+		limit = 1000
+	}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+		if opts.Offset > 0 {
+			query += " OFFSET ?"
+			args = append(args, opts.Offset)
+		}
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list v2 entities: %w", err)
@@ -738,6 +842,22 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 	if update.Priority != nil {
 		current.Priority = *update.Priority
 	}
+	if update.ParentID != nil {
+		parentID, err := domain.ResolveRuneID(*update.ParentID)
+		if err != nil {
+			return domain.Entity{}, err
+		}
+		current.ParentID = parentID
+		if update.SiblingOrder == nil {
+			current.SiblingOrder = 0
+		}
+	}
+	if update.SiblingOrder != nil {
+		if *update.SiblingOrder < 0 {
+			return domain.Entity{}, errors.New("Rune sibling order cannot be negative")
+		}
+		current.SiblingOrder = *update.SiblingOrder
+	}
 	if update.Status != nil {
 		status, err := domain.NormalizeStatus(string(*update.Status))
 		if err != nil {
@@ -766,12 +886,15 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 			current.FinishedAt = nil
 		}
 	}
-	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.Priority == nil {
+	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.Priority == nil && update.ParentID == nil && update.SiblingOrder == nil {
 		return domain.Entity{}, errors.New("v2 update requires at least one field")
 	}
 	current.UpdatedAt = s.now()
 	current.Revision++
 	if err := current.Validate(); err != nil {
+		return domain.Entity{}, err
+	}
+	if err := s.validateEntityReferences(ctx, current); err != nil {
 		return domain.Entity{}, err
 	}
 	tags, properties, err := encodeMetadata(current)
@@ -783,8 +906,13 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 		return domain.Entity{}, fmt.Errorf("begin v2 entity update: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, status=?, priority=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+	current, err = assignSiblingOrderTx(ctx, tx, current)
+	if err != nil {
+		return domain.Entity{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, status=?, priority=?, parent_id=?, sibling_order=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
 		current.Title, current.Body, current.Heading, tags, properties, current.Status, current.Priority,
+		nullString(current.ParentID), current.SiblingOrder,
 		formatTime(current.UpdatedAt), formatOptionalTime(current.FinishedAt), current.Revision,
 		current.ID, current.WorkspaceID, current.Revision-1)
 	if err != nil {
@@ -1028,7 +1156,40 @@ func (s *Store) validateEntityReferences(ctx context.Context, entity domain.Enti
 			return fmt.Errorf("%s %s belongs to workspace %s, not %s", field, id, workspaceID, entity.WorkspaceID)
 		}
 	}
+	if entity.ParentID != "" {
+		seen := map[string]bool{entity.ID: true}
+		parentID := entity.ParentID
+		for parentID != "" {
+			if seen[parentID] {
+				return errors.New("Rune parent hierarchy cannot contain cycles")
+			}
+			seen[parentID] = true
+			var next sql.NullString
+			if err := s.db.QueryRowContext(ctx, "SELECT parent_id FROM entities WHERE id=? AND workspace_id=? AND deleted_at IS NULL", parentID, entity.WorkspaceID).Scan(&next); err != nil {
+				return fmt.Errorf("check Rune parent hierarchy: %w", err)
+			}
+			parentID = next.String
+		}
+	}
 	return nil
+}
+
+func assignSiblingOrderTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) (domain.Entity, error) {
+	if entity.SiblingOrder > 0 {
+		return entity, nil
+	}
+	var maxOrder int
+	var err error
+	if strings.TrimSpace(entity.ParentID) == "" {
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sibling_order), 0) FROM entities WHERE workspace_id=? AND parent_id IS NULL", entity.WorkspaceID).Scan(&maxOrder)
+	} else {
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sibling_order), 0) FROM entities WHERE workspace_id=? AND parent_id=?", entity.WorkspaceID, entity.ParentID).Scan(&maxOrder)
+	}
+	if err != nil {
+		return domain.Entity{}, fmt.Errorf("assign Rune sibling order: %w", err)
+	}
+	entity.SiblingOrder = maxOrder + 1
+	return entity, nil
 }
 
 func (s *Store) ListLinks(ctx context.Context, workspaceID, entityID string) ([]domain.Link, error) {
@@ -1539,6 +1700,10 @@ func (s *Store) Import(ctx context.Context, workspaceID string, bundle markdown.
 		if item.ParentLegacyID != "" {
 			entity.ParentID = legacyToID[legacyKey(bundle.SourcePath, item.ParentLegacyID)]
 		}
+		entity, err = assignSiblingOrderTx(ctx, tx, entity)
+		if err != nil {
+			return report, err
+		}
 		tags, properties, err := encodeMetadata(entity)
 		if err != nil {
 			return report, err
@@ -1547,13 +1712,13 @@ func (s *Store) Import(ctx context.Context, workspaceID string, bundle markdown.
 			id, kind, workspace_id, project, title, body, heading, tags_json,
 			properties_json, status, priority, parent_id, source_note_id,
 			legacy_id, legacy_source, created_at, updated_at, finished_at,
-			revision, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			revision, deleted_at, sibling_order
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
 			entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
 			nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 			formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt),
-			entity.Revision, formatOptionalTime(entity.DeletedAt))
+			entity.Revision, formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
 		if err != nil {
 			return report, fmt.Errorf("import legacy item %q: %w", entity.LegacyID, err)
 		}
@@ -1629,7 +1794,7 @@ func scanEntity(row rowScanner) (domain.Entity, error) {
 	var finishedAt, deletedAt sql.NullString
 	if err := row.Scan(&entity.ID, &entity.Kind, &entity.WorkspaceID, &entity.Project, &entity.Title, &entity.Body,
 		&entity.Heading, &tagsJSON, &propertiesJSON, &entity.Status, &entity.Priority, &parentID,
-		&sourceNoteID, &legacyID, &legacySource, &created, &updated, &finishedAt, &entity.Revision, &deletedAt); err != nil {
+		&sourceNoteID, &legacyID, &legacySource, &created, &updated, &finishedAt, &entity.Revision, &deletedAt, &entity.SiblingOrder); err != nil {
 		return domain.Entity{}, fmt.Errorf("scan v2 entity: %w", err)
 	}
 	entity.ParentID = parentID.String

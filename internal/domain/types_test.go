@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,71 @@ func TestEntityValidationSeparatesNotesAndTasks(t *testing.T) {
 	base.Status = StatusReady
 	if base.Validate() == nil {
 		t.Fatal("note task status should fail")
+	}
+}
+
+func TestRuneContractExposesFacetsAndStableReferences(t *testing.T) {
+	rune := Rune{ID: "abc123", Kind: KindTask, WorkspaceID: "local", Title: "ship"}
+	if got := rune.Reference(); got != "rune://abc123" {
+		t.Fatalf("Rune reference = %q", got)
+	}
+	if got := rune.Facets(); len(got) != 2 || got[0] != FacetDocument || got[1] != FacetTask {
+		t.Fatalf("Rune facets = %#v", got)
+	}
+
+	payload, err := json.Marshal(rune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"kind":"task"`, `"ref":"rune://abc123"`, `"facets":["document","task"]`} {
+		if !strings.Contains(string(payload), want) {
+			t.Fatalf("Rune JSON %q missing %s", payload, want)
+		}
+	}
+
+	note := Rune{ID: "note", Kind: KindNote, WorkspaceID: "local", Title: "idea"}
+	if got := note.Facets(); len(got) != 1 || got[0] != FacetDocument {
+		t.Fatalf("note facets = %#v", got)
+	}
+}
+
+func TestResolveRuneIDAcceptsStableAndShortForms(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "abc123", want: "abc123"},
+		{input: " rune://abc123 ", want: "abc123"},
+		{input: "", want: ""},
+	} {
+		got, err := ResolveRuneID(test.input)
+		if err != nil || got != test.want {
+			t.Fatalf("ResolveRuneID(%q) = %q, %v; want %q", test.input, got, err, test.want)
+		}
+	}
+	for _, input := range []string{"http://abc123", "rune://", "rune://abc/child"} {
+		if _, err := ResolveRuneID(input); err == nil {
+			t.Fatalf("ResolveRuneID(%q) should fail", input)
+		}
+	}
+}
+
+func TestNormalizeRuneSortUsesStableNames(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  RuneSortField
+	}{
+		{input: "updated_at", want: RuneSortUpdatedAt},
+		{input: "created-at", want: RuneSortCreatedAt},
+		{input: "sibling_order", want: RuneSortOrder},
+	} {
+		got, err := NormalizeRuneSort(test.input)
+		if err != nil || got != test.want {
+			t.Fatalf("NormalizeRuneSort(%q) = %q, %v; want %q", test.input, got, err, test.want)
+		}
+	}
+	if _, err := NormalizeRuneSort("made-up"); err == nil {
+		t.Fatal("unknown Rune sort should fail")
 	}
 }
 

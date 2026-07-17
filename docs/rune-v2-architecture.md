@@ -1,11 +1,12 @@
 # Rune Architecture RFC
 
-Status: Slice 6A canonical Rune contract and agent-pipeline refresh. The local
-structured preview, fake-provider loop, Bubble Tea client, revision cursor
-ledger, file-backed sync peer, revision-aware push/pull, artifact transfer, and
-visible conflict records are implemented behind the opt-in `rune v2` namespace;
-hosted authentication, server deployment, and remote workers remain future
-work.
+Status: Slice 6B initial canonical Rune/client boundary. The local structured
+preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
+file-backed sync peer, revision-aware push/pull, artifact transfer, visible
+conflict records, stable `rune://` references, explicit sibling ordering, and
+shared query/client contracts are implemented behind the opt-in `rune v2`
+namespace; full facet storage, hosted authentication, server deployment, and
+remote workers remain future work.
 
 ## North Star
 
@@ -281,7 +282,16 @@ rename or hosted service is included in this slice.
 
 Introduce the Rune application/client contract over the transitional structured
 store, including document/task facets, stable references, explicit parent-child
-ordering, shared query semantics, and cross-surface JSON shapes.
+ordering, shared query semantics, and cross-surface JSON shapes. The initial
+contract is implemented through canonical `Rune`, `RuneQuery`, `RuneUpdate`,
+and `RuneClient` names while retaining compatibility aliases for the existing
+SQLite-backed implementation. Parent capture/edit/list flows accept short IDs
+and `rune://` references, and migration backfills deterministic sibling order
+for existing rows.
+
+Full facet-specific properties, lifecycle vocabulary, and a first-class
+embedded `sync` API remain separate slices; this boundary does not claim a
+hosted service or replace the legacy Markdown commands.
 
 ### Slice 7: additional clients and workers
 
@@ -300,6 +310,19 @@ workers using the same `sync` API and run contract.
 - CLI, TUI, app, and future clients are required to use one shared application
   contract rather than surface-specific domain models.
 - Agent config validation and hook syntax checks pass.
+
+## Slice 6B Acceptance Criteria
+
+- Canonical Rune names are available to storage callers without breaking the
+  transitional `Entity`/`Kind` implementation.
+- Runes expose document/task facets and stable `rune://` references in JSON and
+  terminal output.
+- Parent-child identity and sibling order are explicit, revisioned, queryable,
+  and migration-safe.
+- CLI capture, edit, list, show, JSON output, and the TUI share the same client
+  boundary and stable reference semantics.
+- Query sorting is allow-listed, deterministic, and bounded; no user input is
+  interpolated as SQL.
 
 ## Remaining Decisions For Hosted Sync
 
