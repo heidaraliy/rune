@@ -34,12 +34,20 @@ func TestLocalExecutionQueuesRunsAndStoresContextAndResult(t *testing.T) {
 	if run.Status != domain.RunStatusQueued || run.ContextArtifactID == "" || !strings.Contains(run.ContextSnapshot, "rune.context.v1") {
 		t.Fatalf("queued run = %#v", run)
 	}
+	queuedTask, err := service.Get(context.Background(), task.ID)
+	if err != nil || queuedTask.State != domain.StateReady {
+		t.Fatalf("queued task state = %#v, err=%v", queuedTask, err)
+	}
 	completed, err := service.ExecuteRun(context.Background(), run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if completed.Status != domain.RunStatusCompleted || completed.Summary == "" {
 		t.Fatalf("completed run = %#v", completed)
+	}
+	completedTask, err := service.Get(context.Background(), task.ID)
+	if err != nil || completedTask.State != domain.StateComplete {
+		t.Fatalf("completed task state = %#v, err=%v", completedTask, err)
 	}
 	items, err := service.Artifacts(context.Background(), run.ID)
 	if err != nil {
@@ -105,7 +113,7 @@ func TestLocalExecutionRecordsProviderFailure(t *testing.T) {
 		t.Fatalf("failed run = %#v, err=%v", failed, err)
 	}
 	task, err = service.Get(context.Background(), task.ID)
-	if err != nil || task.Status != domain.StatusFailed {
+	if err != nil || task.Status != domain.StatusFailed || task.State != domain.StateFailed {
 		t.Fatalf("failed task = %#v, err=%v", task, err)
 	}
 }

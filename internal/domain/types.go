@@ -41,6 +41,26 @@ var validStatuses = map[Status]struct{}{
 	StatusFailed: {}, StatusCanceled: {},
 }
 
+// RuneState is the canonical lifecycle for authored workspace objects. The
+// legacy Status field remains as a task/run compatibility projection while
+// clients migrate to State.
+type RuneState string
+
+const (
+	StateDraft      RuneState = "draft"
+	StateReady      RuneState = "ready"
+	StateInProgress RuneState = "in_progress"
+	StateComplete   RuneState = "complete"
+	StateBlocked    RuneState = "blocked"
+	StateReview     RuneState = "review"
+	StateFailed     RuneState = "failed"
+)
+
+var validRuneStates = map[RuneState]struct{}{
+	StateDraft: {}, StateReady: {}, StateInProgress: {}, StateComplete: {},
+	StateBlocked: {}, StateReview: {}, StateFailed: {},
+}
+
 type Entity struct {
 	ID           string            `json:"id"`
 	Kind         Kind              `json:"kind"`
@@ -52,9 +72,11 @@ type Entity struct {
 	Tags         []string          `json:"tags,omitempty"`
 	Properties   map[string]string `json:"properties,omitempty"`
 	Status       Status            `json:"status,omitempty"`
+	State        RuneState         `json:"state,omitempty"`
 	Priority     int               `json:"priority,omitempty"`
 	ParentID     string            `json:"parent_id,omitempty"`
 	SiblingOrder int               `json:"sibling_order,omitempty"`
+	FacetSet     []RuneFacet       `json:"-"`
 	SourceNoteID string            `json:"source_note_id,omitempty"`
 	LegacyID     string            `json:"legacy_id,omitempty"`
 	LegacySource string            `json:"legacy_source,omitempty"`
@@ -77,10 +99,57 @@ const (
 )
 
 func (e Entity) Facets() []RuneFacet {
-	if e.Kind == KindTask {
+	if len(e.FacetSet) > 0 {
+		return append([]RuneFacet(nil), e.FacetSet...)
+	}
+	return DefaultRuneFacets(e.Kind)
+}
+
+func DefaultRuneFacets(kind Kind) []RuneFacet {
+	if kind == KindTask {
 		return []RuneFacet{FacetDocument, FacetTask}
 	}
 	return []RuneFacet{FacetDocument}
+}
+
+func (e Entity) HasFacet(facet RuneFacet) bool {
+	for _, candidate := range e.Facets() {
+		if candidate == facet {
+			return true
+		}
+	}
+	return false
+}
+
+func NormalizeRuneFacets(facets []RuneFacet, kind Kind) ([]RuneFacet, error) {
+	if len(facets) == 0 {
+		return DefaultRuneFacets(kind), nil
+	}
+	seen := make(map[RuneFacet]struct{}, len(facets)+1)
+	normalized := make([]RuneFacet, 0, len(facets)+1)
+	for _, facet := range facets {
+		facet = RuneFacet(strings.ToLower(strings.TrimSpace(string(facet))))
+		if facet == "" {
+			continue
+		}
+		if facet != FacetDocument && facet != FacetTask {
+			return nil, fmt.Errorf("unsupported Rune facet %q", facet)
+		}
+		if _, ok := seen[facet]; ok {
+			continue
+		}
+		seen[facet] = struct{}{}
+		normalized = append(normalized, facet)
+	}
+	if _, ok := seen[FacetDocument]; !ok {
+		normalized = append([]RuneFacet{FacetDocument}, normalized...)
+	}
+	if kind == KindTask {
+		if _, ok := seen[FacetTask]; !ok {
+			normalized = append(normalized, FacetTask)
+		}
+	}
+	return normalized, nil
 }
 
 func (e Entity) Reference() string {
@@ -111,8 +180,8 @@ func ResolveRuneID(value string) (string, error) {
 	return value, nil
 }
 
-// MarshalJSON keeps the transitional kind field while exposing stable client
-// fields that do not require new storage columns.
+// MarshalJSON keeps the transitional kind/status fields while exposing stable
+// client facets and Rune lifecycle state.
 func (e Entity) MarshalJSON() ([]byte, error) {
 	type entityJSON Entity
 	return json.Marshal(struct {
@@ -126,6 +195,90 @@ func (e Entity) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (e *Entity) UnmarshalJSON(data []byte) error {
+	type entityJSON Entity
+	var decoded struct {
+		entityJSON
+		Ref    string      `json:"ref"`
+		Facets []RuneFacet `json:"facets"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*e = Entity(decoded.entityJSON)
+	e.FacetSet = decoded.Facets
+	return nil
+}
+
+func NormalizeRuneState(value string) (RuneState, error) {
+	state := RuneState(strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "-", "_"))))
+	if state == "" {
+		return "", nil
+	}
+	if state == "completed" {
+		state = StateComplete
+	}
+	if _, ok := validRuneStates[state]; !ok {
+		return "", fmt.Errorf("unknown Rune state %q", value)
+	}
+	return state, nil
+}
+
+func RuneStateFromStatus(status Status, _ Kind) RuneState {
+	switch status {
+	case StatusReady:
+		return StateReady
+	case StatusRunning:
+		return StateInProgress
+	case StatusBlocked:
+		return StateBlocked
+	case StatusReview:
+		return StateReview
+	case StatusCompleted:
+		return StateComplete
+	case StatusFailed:
+		return StateFailed
+	case StatusDraft:
+		return StateDraft
+	case StatusQueued, StatusCanceled:
+		return StateReady
+	default:
+		return StateDraft
+	}
+}
+
+func LegacyStatusFromRuneState(state RuneState) Status {
+	switch state {
+	case StateReady:
+		return StatusReady
+	case StateInProgress:
+		return StatusRunning
+	case StateBlocked:
+		return StatusBlocked
+	case StateReview:
+		return StatusReview
+	case StateComplete:
+		return StatusCompleted
+	case StateFailed:
+		return StatusFailed
+	default:
+		return StatusDraft
+	}
+}
+
+func NextRuneState(state RuneState) RuneState {
+	switch state {
+	case StateDraft:
+		return StateReady
+	case StateReady:
+		return StateInProgress
+	case StateInProgress:
+		return StateComplete
+	default:
+		return StateDraft
+	}
+}
+
 type Update struct {
 	ExpectedRevision int64
 	Title            *string
@@ -134,6 +287,7 @@ type Update struct {
 	Heading          *string
 	Tags             *[]string
 	Status           *Status
+	State            *RuneState
 	Priority         *int
 	ParentID         *string
 	SiblingOrder     *int
@@ -170,6 +324,7 @@ type ListOptions struct {
 	Project        string
 	Kind           Kind
 	Status         Status
+	State          RuneState
 	Query          string
 	ParentID       string
 	SortBy         RuneSortField
@@ -484,7 +639,27 @@ func DisplayID(id string) string {
 }
 
 func (e Entity) IsTask() bool {
-	return e.Kind == KindTask
+	return e.HasFacet(FacetTask)
+}
+
+func (e *Entity) Normalize() error {
+	facets, err := NormalizeRuneFacets(e.FacetSet, e.Kind)
+	if err != nil {
+		return err
+	}
+	e.FacetSet = facets
+	stateWasExplicit := e.State != ""
+	if e.State == "" {
+		e.State = RuneStateFromStatus(e.Status, e.Kind)
+	}
+	e.State, err = NormalizeRuneState(string(e.State))
+	if err != nil {
+		return err
+	}
+	if e.IsTask() && (e.Status == "" || (stateWasExplicit && !(e.State == StateReady && (e.Status == StatusQueued || e.Status == StatusCanceled)))) {
+		e.Status = LegacyStatusFromRuneState(e.State)
+	}
+	return e.Validate()
 }
 
 func (e Entity) Validate() error {
@@ -505,6 +680,16 @@ func (e Entity) Validate() error {
 	}
 	if e.ParentID == e.ID && e.ParentID != "" {
 		return errors.New("Rune cannot be its own parent")
+	}
+	if len(e.FacetSet) > 0 {
+		if _, err := NormalizeRuneFacets(e.FacetSet, e.Kind); err != nil {
+			return err
+		}
+	}
+	if e.State != "" {
+		if _, err := NormalizeRuneState(string(e.State)); err != nil {
+			return err
+		}
 	}
 	if e.IsTask() {
 		if e.Status == "" {

@@ -135,7 +135,7 @@ func (s *Store) applyRemoteEntityTx(ctx context.Context, tx *sql.Tx, txChange do
 	if incoming.WorkspaceID != txChange.WorkspaceID {
 		return nil, errors.New("remote entity belongs to another workspace")
 	}
-	if err := incoming.Validate(); err != nil {
+	if err := incoming.Normalize(); err != nil {
 		return nil, err
 	}
 	if err := validateEntityReferencesTx(ctx, tx, incoming); err != nil {
@@ -165,9 +165,10 @@ func (s *Store) applyRemoteEntityTx(ctx context.Context, tx *sql.Tx, txChange do
 
 func (s *Store) applyRemoteStatusTx(ctx context.Context, tx *sql.Tx, txChange domain.Change) (*domain.Conflict, error) {
 	var payload struct {
-		EntityID string        `json:"entity_id"`
-		Status   domain.Status `json:"status"`
-		Revision int64         `json:"revision"`
+		EntityID string           `json:"entity_id"`
+		Status   domain.Status    `json:"status"`
+		State    domain.RuneState `json:"state"`
+		Revision int64            `json:"revision"`
 	}
 	if err := json.Unmarshal([]byte(txChange.Payload), &payload); err != nil {
 		return nil, fmt.Errorf("decode remote entity status: %w", err)
@@ -189,7 +190,16 @@ func (s *Store) applyRemoteStatusTx(ctx context.Context, tx *sql.Tx, txChange do
 	if err != nil {
 		return nil, err
 	}
-	if current.Revision == payload.Revision && current.Status == payload.Status {
+	state, err := domain.NormalizeRuneState(string(payload.State))
+	if err != nil {
+		return nil, err
+	}
+	if state == "" {
+		state = domain.RuneStateFromStatus(status, current.Kind)
+	} else if current.IsTask() && state != domain.RuneStateFromStatus(status, current.Kind) {
+		return nil, fmt.Errorf("remote status %q conflicts with Rune state %q", status, state)
+	}
+	if current.Revision == payload.Revision && current.Status == payload.Status && current.State == state {
 		return nil, nil
 	}
 	if current.Revision+1 != payload.Revision {
@@ -206,8 +216,8 @@ func (s *Store) applyRemoteStatusTx(ctx context.Context, tx *sql.Tx, txChange do
 	if status == domain.StatusCompleted {
 		finishedAt = formatTime(updatedAt)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
-		status, formatTime(updatedAt), finishedAt, payload.Revision, current.ID, txChange.WorkspaceID, current.Revision); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, state=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+		status, state, formatTime(updatedAt), finishedAt, payload.Revision, current.ID, txChange.WorkspaceID, current.Revision); err != nil {
 		return nil, fmt.Errorf("apply remote entity status: %w", err)
 	}
 	return nil, nil
@@ -357,7 +367,7 @@ func (s *Store) applyRemoteArtifactTx(ctx context.Context, tx *sql.Tx, txChange 
 
 func scanEntityByIDTx(ctx context.Context, tx *sql.Tx, workspaceID, id string) (domain.Entity, error) {
 	return scanEntity(tx.QueryRowContext(ctx, `SELECT id, kind, workspace_id, project, title, body, heading, tags_json,
-		properties_json, status, priority, parent_id, source_note_id, legacy_id,
+		properties_json, facets_json, status, state, priority, parent_id, source_note_id, legacy_id,
 		legacy_source, created_at, updated_at, finished_at, revision, deleted_at, sibling_order
 		FROM entities WHERE workspace_id=? AND id=?`, workspaceID, id))
 }
@@ -473,18 +483,18 @@ func insertEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error
 	if err != nil {
 		return err
 	}
-	tags, properties, err := encodeMetadata(entity)
+	tags, properties, facets, err := encodeMetadata(entity)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO entities(
 		id, kind, workspace_id, project, title, body, heading, tags_json,
-		properties_json, status, priority, parent_id, source_note_id,
+		properties_json, facets_json, status, state, priority, parent_id, source_note_id,
 		legacy_id, legacy_source, created_at, updated_at, finished_at,
 		revision, deleted_at, sibling_order
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
-		entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
+		entity.Heading, tags, properties, facets, entity.Status, entity.State, entity.Priority, nullString(entity.ParentID),
 		nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource, formatTime(entity.CreatedAt),
 		formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt), entity.Revision,
 		formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
@@ -495,14 +505,14 @@ func insertEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error
 }
 
 func updateEntityTx(ctx context.Context, tx *sql.Tx, entity domain.Entity) error {
-	tags, properties, err := encodeMetadata(entity)
+	tags, properties, facets, err := encodeMetadata(entity)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE entities SET kind=?, project=?, title=?, body=?, heading=?, tags_json=?,
-		properties_json=?, status=?, priority=?, parent_id=?, sibling_order=?, source_note_id=?, legacy_id=?, legacy_source=?,
+		properties_json=?, facets_json=?, status=?, state=?, priority=?, parent_id=?, sibling_order=?, source_note_id=?, legacy_id=?, legacy_source=?,
 		created_at=?, updated_at=?, finished_at=?, revision=?, deleted_at=? WHERE id=? AND workspace_id=? AND revision=?`,
-		entity.Kind, entity.Project, entity.Title, entity.Body, entity.Heading, tags, properties, entity.Status,
+		entity.Kind, entity.Project, entity.Title, entity.Body, entity.Heading, tags, properties, facets, entity.Status, entity.State,
 		entity.Priority, nullString(entity.ParentID), entity.SiblingOrder, nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 		formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt), entity.Revision,
 		formatOptionalTime(entity.DeletedAt), entity.ID, entity.WorkspaceID, entity.Revision-1)

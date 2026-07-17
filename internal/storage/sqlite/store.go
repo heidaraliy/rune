@@ -360,6 +360,45 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		version = 5
 	}
+	if version < 6 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin Rune state migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`ALTER TABLE entities ADD COLUMN facets_json TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE entities ADD COLUMN state TEXT NOT NULL DEFAULT ''`,
+			`UPDATE entities SET facets_json = CASE WHEN kind='task' THEN '["document","task"]' ELSE '["document"]' END WHERE facets_json='[]'`,
+			`UPDATE entities SET state = CASE status
+				WHEN 'ready' THEN 'ready'
+				WHEN 'queued' THEN 'ready'
+				WHEN 'running' THEN 'in_progress'
+				WHEN 'blocked' THEN 'blocked'
+				WHEN 'review' THEN 'review'
+				WHEN 'completed' THEN 'complete'
+				WHEN 'failed' THEN 'failed'
+				WHEN 'canceled' THEN 'ready'
+				ELSE 'draft'
+			END WHERE state=''`,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?)`,
+		}
+		for index, statement := range statements {
+			if index == len(statements)-1 {
+				if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("apply Rune state migration %d: %w", index+1, err)
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply Rune state migration %d: %w", index+1, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit Rune state migration: %w", err)
+		}
+		version = 6
+	}
 	return nil
 }
 
@@ -615,7 +654,7 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 	if entity.SourceNoteID, err = domain.ResolveRuneID(entity.SourceNoteID); err != nil {
 		return domain.Entity{}, err
 	}
-	tags, properties, err := encodeMetadata(entity)
+	tags, properties, facets, err := encodeMetadata(entity)
 	if err != nil {
 		return domain.Entity{}, err
 	}
@@ -634,12 +673,12 @@ func (s *Store) Create(ctx context.Context, entity domain.Entity) (domain.Entity
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO entities(
 			id, kind, workspace_id, project, title, body, heading, tags_json,
-			properties_json, status, priority, parent_id, source_note_id,
+			properties_json, facets_json, status, state, priority, parent_id, source_note_id,
 			legacy_id, legacy_source, created_at, updated_at, finished_at,
 			revision, deleted_at, sibling_order
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
-		entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
+		entity.Heading, tags, properties, facets, entity.Status, entity.State, entity.Priority, nullString(entity.ParentID),
 		nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 		formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt),
 		entity.Revision, formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
@@ -711,7 +750,7 @@ func (s *Store) List(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 
 func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Entity, error) {
 	query := `SELECT id, kind, workspace_id, project, title, body, heading, tags_json,
-		properties_json, status, priority, parent_id, source_note_id, legacy_id,
+		properties_json, facets_json, status, state, priority, parent_id, source_note_id, legacy_id,
 		legacy_source, created_at, updated_at, finished_at, revision, deleted_at, sibling_order
 		FROM entities WHERE 1=1`
 	args := make([]any, 0, 8)
@@ -730,6 +769,14 @@ func (s *Store) list(ctx context.Context, opts domain.ListOptions) ([]domain.Ent
 	if opts.Status != "" {
 		query += " AND status = ?"
 		args = append(args, opts.Status)
+	}
+	if opts.State != "" {
+		state, err := domain.NormalizeRuneState(string(opts.State))
+		if err != nil {
+			return nil, err
+		}
+		query += " AND state = ?"
+		args = append(args, state)
 	}
 	if strings.TrimSpace(opts.Query) != "" {
 		query += " AND (LOWER(title) LIKE LOWER(?) OR LOWER(body) LIKE LOWER(?))"
@@ -879,6 +926,7 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 			}
 		}
 		current.Status = status
+		current.State = domain.RuneStateFromStatus(status, current.Kind)
 		if status == domain.StatusCompleted {
 			finishedAt := s.now()
 			current.FinishedAt = &finishedAt
@@ -886,18 +934,47 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 			current.FinishedAt = nil
 		}
 	}
-	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.Priority == nil && update.ParentID == nil && update.SiblingOrder == nil {
+	if update.State != nil {
+		state, err := domain.NormalizeRuneState(string(*update.State))
+		if err != nil {
+			return domain.Entity{}, err
+		}
+		if state == "" {
+			state = domain.StateDraft
+		}
+		desiredStatus := domain.LegacyStatusFromRuneState(state)
+		if current.IsTask() && (state != current.State || current.Status != desiredStatus) {
+			var activeRuns int
+			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE task_id=? AND status IN (?, ?, ?)", current.ID, domain.RunStatusQueued, domain.RunStatusRunning, domain.RunStatusReview).Scan(&activeRuns); err != nil {
+				return domain.Entity{}, fmt.Errorf("check active v2 runs: %w", err)
+			}
+			if activeRuns > 0 {
+				return domain.Entity{}, fmt.Errorf("task %s is owned by an active run; use v2 run or cancel", domain.DisplayID(current.ID))
+			}
+		}
+		current.State = state
+		if current.IsTask() {
+			current.Status = desiredStatus
+		}
+		if state == domain.StateComplete {
+			finishedAt := s.now()
+			current.FinishedAt = &finishedAt
+		} else if update.Status == nil {
+			current.FinishedAt = nil
+		}
+	}
+	if update.Title == nil && update.Body == nil && update.AppendBody == nil && update.Heading == nil && update.Tags == nil && update.Status == nil && update.State == nil && update.Priority == nil && update.ParentID == nil && update.SiblingOrder == nil {
 		return domain.Entity{}, errors.New("v2 update requires at least one field")
 	}
 	current.UpdatedAt = s.now()
 	current.Revision++
-	if err := current.Validate(); err != nil {
+	if err := current.Normalize(); err != nil {
 		return domain.Entity{}, err
 	}
 	if err := s.validateEntityReferences(ctx, current); err != nil {
 		return domain.Entity{}, err
 	}
-	tags, properties, err := encodeMetadata(current)
+	tags, properties, facets, err := encodeMetadata(current)
 	if err != nil {
 		return domain.Entity{}, err
 	}
@@ -910,8 +987,8 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 	if err != nil {
 		return domain.Entity{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, status=?, priority=?, parent_id=?, sibling_order=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
-		current.Title, current.Body, current.Heading, tags, properties, current.Status, current.Priority,
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET title=?, body=?, heading=?, tags_json=?, properties_json=?, facets_json=?, status=?, state=?, priority=?, parent_id=?, sibling_order=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+		current.Title, current.Body, current.Heading, tags, properties, facets, current.Status, current.State, current.Priority,
 		nullString(current.ParentID), current.SiblingOrder,
 		formatTime(current.UpdatedAt), formatOptionalTime(current.FinishedAt), current.Revision,
 		current.ID, current.WorkspaceID, current.Revision-1)
@@ -962,6 +1039,7 @@ func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, s
 		}
 	}
 	current.Status = status
+	current.State = domain.RuneStateFromStatus(status, current.Kind)
 	if status == domain.StatusCompleted {
 		finishedAt := s.now()
 		current.FinishedAt = &finishedAt
@@ -978,8 +1056,8 @@ func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, s
 		return domain.Entity{}, fmt.Errorf("begin v2 task status: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
-		current.Status,
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, state=?, updated_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
+		current.Status, current.State,
 		formatTime(current.UpdatedAt), formatOptionalTime(current.FinishedAt), current.Revision,
 		current.ID, current.WorkspaceID, current.Revision-1)
 	if err != nil {
@@ -995,6 +1073,7 @@ func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, s
 	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.status", current.ID+":status:"+fmt.Sprint(current.Revision), current.ID, current.Revision, map[string]any{
 		"entity_id": current.ID,
 		"status":    current.Status,
+		"state":     current.State,
 		"revision":  current.Revision,
 	}, current.UpdatedAt); err != nil {
 		return domain.Entity{}, err
@@ -1287,8 +1366,8 @@ func (s *Store) QueueRun(ctx context.Context, run domain.Run, contextArtifact *d
 		}
 	}
 	updatedAt := s.now()
-	result, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, updated_at=?, finished_at=NULL, revision=revision+1 WHERE id=? AND workspace_id=? AND status IN (?, ?)`,
-		domain.StatusQueued, formatTime(updatedAt), run.TaskID, run.WorkspaceID, domain.StatusDraft, domain.StatusReady)
+	result, err := tx.ExecContext(ctx, `UPDATE entities SET status=?, state=?, updated_at=?, finished_at=NULL, revision=revision+1 WHERE id=? AND workspace_id=? AND status IN (?, ?)`,
+		domain.StatusQueued, domain.StateReady, formatTime(updatedAt), run.TaskID, run.WorkspaceID, domain.StatusDraft, domain.StatusReady)
 	if err != nil {
 		return domain.Run{}, domain.Artifact{}, fmt.Errorf("mark task queued: %w", err)
 	}
@@ -1317,6 +1396,7 @@ func (s *Store) QueueRun(ctx context.Context, run domain.Run, contextArtifact *d
 	if err := s.recordChangeTx(ctx, tx, run.WorkspaceID, "entity.status", run.TaskID+":status:"+fmt.Sprint(taskRevision+1), run.TaskID, taskRevision+1, map[string]any{
 		"entity_id": run.TaskID,
 		"status":    domain.StatusQueued,
+		"state":     domain.StateReady,
 		"revision":  taskRevision + 1,
 	}, updatedAt); err != nil {
 		return domain.Run{}, domain.Artifact{}, err
@@ -1442,6 +1522,7 @@ func (s *Store) SetRunStatus(ctx context.Context, prefix, workspaceID string, st
 	if status == domain.RunStatusCompleted || status == domain.RunStatusFailed || status == domain.RunStatusCanceled {
 		updated.FinishedAt = &now
 	}
+	taskState := domain.RuneStateFromStatus(domain.Status(status), domain.KindTask)
 	result, err := tx.ExecContext(ctx, `UPDATE runs SET status=?, summary=?, error_text=?, started_at=?, finished_at=?, revision=? WHERE id=? AND workspace_id=? AND revision=?`,
 		updated.Status, updated.Summary, updated.Error, formatOptionalTime(updated.StartedAt), formatOptionalTime(updated.FinishedAt), updated.Revision,
 		updated.ID, workspaceID, current.Revision)
@@ -1458,7 +1539,7 @@ func (s *Store) SetRunStatus(ctx context.Context, prefix, workspaceID string, st
 	if status == domain.RunStatusCompleted || status == domain.RunStatusFailed || status == domain.RunStatusCanceled {
 		entityFinished = formatTime(now)
 	}
-	result, err = tx.ExecContext(ctx, "UPDATE entities SET status=?, updated_at=?, finished_at=?, revision=revision+1 WHERE id=? AND workspace_id=? AND status=?", status, formatTime(now), entityFinished, current.TaskID, workspaceID, current.Status)
+	result, err = tx.ExecContext(ctx, "UPDATE entities SET status=?, state=?, updated_at=?, finished_at=?, revision=revision+1 WHERE id=? AND workspace_id=? AND status=?", status, taskState, formatTime(now), entityFinished, current.TaskID, workspaceID, current.Status)
 	if err != nil {
 		return domain.Run{}, fmt.Errorf("update v2 task status: %w", err)
 	}
@@ -1484,6 +1565,7 @@ func (s *Store) SetRunStatus(ctx context.Context, prefix, workspaceID string, st
 	if err := s.recordChangeTx(ctx, tx, workspaceID, "entity.status", current.TaskID+":status:"+fmt.Sprint(taskRevision+1), current.TaskID, taskRevision+1, map[string]any{
 		"entity_id": current.TaskID,
 		"status":    status,
+		"state":     taskState,
 		"revision":  taskRevision + 1,
 	}, now); err != nil {
 		return domain.Run{}, err
@@ -1700,22 +1782,25 @@ func (s *Store) Import(ctx context.Context, workspaceID string, bundle markdown.
 		if item.ParentLegacyID != "" {
 			entity.ParentID = legacyToID[legacyKey(bundle.SourcePath, item.ParentLegacyID)]
 		}
+		if err := entity.Normalize(); err != nil {
+			return report, fmt.Errorf("normalize imported legacy item %q: %w", entity.LegacyID, err)
+		}
 		entity, err = assignSiblingOrderTx(ctx, tx, entity)
 		if err != nil {
 			return report, err
 		}
-		tags, properties, err := encodeMetadata(entity)
+		tags, properties, facets, err := encodeMetadata(entity)
 		if err != nil {
 			return report, err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO entities(
 			id, kind, workspace_id, project, title, body, heading, tags_json,
-			properties_json, status, priority, parent_id, source_note_id,
+			properties_json, facets_json, status, state, priority, parent_id, source_note_id,
 			legacy_id, legacy_source, created_at, updated_at, finished_at,
 			revision, deleted_at, sibling_order
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			entity.ID, entity.Kind, entity.WorkspaceID, entity.Project, entity.Title, entity.Body,
-			entity.Heading, tags, properties, entity.Status, entity.Priority, nullString(entity.ParentID),
+			entity.Heading, tags, properties, facets, entity.Status, entity.State, entity.Priority, nullString(entity.ParentID),
 			nullString(entity.SourceNoteID), entity.LegacyID, entity.LegacySource,
 			formatTime(entity.CreatedAt), formatTime(entity.UpdatedAt), formatOptionalTime(entity.FinishedAt),
 			entity.Revision, formatOptionalTime(entity.DeletedAt), entity.SiblingOrder)
@@ -1744,9 +1829,6 @@ func (s *Store) prepareEntity(entity domain.Entity) (domain.Entity, error) {
 	if strings.TrimSpace(entity.WorkspaceID) == "" {
 		entity.WorkspaceID = defaultWorkspaceID
 	}
-	if entity.Kind == domain.KindTask && entity.Status == "" {
-		entity.Status = domain.StatusDraft
-	}
 	now := s.now()
 	if entity.CreatedAt.IsZero() {
 		entity.CreatedAt = now
@@ -1761,16 +1843,16 @@ func (s *Store) prepareEntity(entity domain.Entity) (domain.Entity, error) {
 	if entity.Properties == nil {
 		entity.Properties = map[string]string{}
 	}
-	if err := entity.Validate(); err != nil {
+	if err := entity.Normalize(); err != nil {
 		return domain.Entity{}, err
 	}
 	return entity, nil
 }
 
-func encodeMetadata(entity domain.Entity) (string, string, error) {
+func encodeMetadata(entity domain.Entity) (string, string, string, error) {
 	tags, err := json.Marshal(domain.NormalizeTags(entity.Tags))
 	if err != nil {
-		return "", "", fmt.Errorf("encode entity tags: %w", err)
+		return "", "", "", fmt.Errorf("encode entity tags: %w", err)
 	}
 	properties := entity.Properties
 	if properties == nil {
@@ -1778,9 +1860,13 @@ func encodeMetadata(entity domain.Entity) (string, string, error) {
 	}
 	encodedProperties, err := json.Marshal(properties)
 	if err != nil {
-		return "", "", fmt.Errorf("encode entity properties: %w", err)
+		return "", "", "", fmt.Errorf("encode entity properties: %w", err)
 	}
-	return string(tags), string(encodedProperties), nil
+	facets, err := json.Marshal(entity.Facets())
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode entity facets: %w", err)
+	}
+	return string(tags), string(encodedProperties), string(facets), nil
 }
 
 type rowScanner interface {
@@ -1789,11 +1875,11 @@ type rowScanner interface {
 
 func scanEntity(row rowScanner) (domain.Entity, error) {
 	var entity domain.Entity
-	var tagsJSON, propertiesJSON, created, updated string
+	var tagsJSON, propertiesJSON, facetsJSON, created, updated string
 	var parentID, sourceNoteID, legacyID, legacySource sql.NullString
 	var finishedAt, deletedAt sql.NullString
 	if err := row.Scan(&entity.ID, &entity.Kind, &entity.WorkspaceID, &entity.Project, &entity.Title, &entity.Body,
-		&entity.Heading, &tagsJSON, &propertiesJSON, &entity.Status, &entity.Priority, &parentID,
+		&entity.Heading, &tagsJSON, &propertiesJSON, &facetsJSON, &entity.Status, &entity.State, &entity.Priority, &parentID,
 		&sourceNoteID, &legacyID, &legacySource, &created, &updated, &finishedAt, &entity.Revision, &deletedAt, &entity.SiblingOrder); err != nil {
 		return domain.Entity{}, fmt.Errorf("scan v2 entity: %w", err)
 	}
@@ -1829,6 +1915,12 @@ func scanEntity(row rowScanner) (domain.Entity, error) {
 	}
 	if err := json.Unmarshal([]byte(propertiesJSON), &entity.Properties); err != nil {
 		return domain.Entity{}, fmt.Errorf("decode entity properties: %w", err)
+	}
+	if err := json.Unmarshal([]byte(facetsJSON), &entity.FacetSet); err != nil {
+		return domain.Entity{}, fmt.Errorf("decode entity facets: %w", err)
+	}
+	if err := entity.Normalize(); err != nil {
+		return domain.Entity{}, err
 	}
 	return entity, nil
 }

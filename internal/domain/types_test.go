@@ -65,6 +65,61 @@ func TestRuneContractExposesFacetsAndStableReferences(t *testing.T) {
 	}
 }
 
+func TestRuneNormalizePersistsFacetsAndCanonicalState(t *testing.T) {
+	task := Rune{ID: "task", Kind: KindTask, WorkspaceID: "local", Title: "ship", State: StateReady}
+	if err := task.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if task.State != StateReady || task.Status != StatusReady || !task.HasFacet(FacetTask) {
+		t.Fatalf("normalized task = %#v", task)
+	}
+	if got := strings.Join([]string{string(task.Facets()[0]), string(task.Facets()[1])}, ","); got != "document,task" {
+		t.Fatalf("task facets = %q", got)
+	}
+
+	note := Rune{ID: "note", Kind: KindNote, WorkspaceID: "local", Title: "work note", State: StateInProgress}
+	if err := note.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if note.State != StateInProgress || note.Status != "" || note.IsTask() {
+		t.Fatalf("normalized note = %#v", note)
+	}
+
+	payload, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip Rune
+	if err := json.Unmarshal(payload, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if err := roundTrip.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.State != StateReady || !roundTrip.HasFacet(FacetTask) {
+		t.Fatalf("round trip Rune = %#v", roundTrip)
+	}
+}
+
+func TestNormalizeRuneStateSupportsCanonicalAliases(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  RuneState
+	}{
+		{input: "in-progress", want: StateInProgress},
+		{input: "completed", want: StateComplete},
+		{input: "ready", want: StateReady},
+	} {
+		got, err := NormalizeRuneState(test.input)
+		if err != nil || got != test.want {
+			t.Fatalf("NormalizeRuneState(%q) = %q, %v; want %q", test.input, got, err, test.want)
+		}
+	}
+	if _, err := NormalizeRuneState("unknown"); err == nil {
+		t.Fatal("unknown Rune state should fail")
+	}
+}
+
 func TestResolveRuneIDAcceptsStableAndShortForms(t *testing.T) {
 	for _, test := range []struct {
 		input string

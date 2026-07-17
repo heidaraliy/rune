@@ -73,7 +73,9 @@ by default, and the preview does not sync to the cloud yet:
 
 ```sh
 rune v2 capture "design sync" --project rune
+rune v2 capture "ready for review" --state ready
 rune v2 list --project rune
+rune v2 list --state in_progress
 rune v2 capture "break proposal into a task" --parent rune://<parent-id>
 rune v2 list --parent rune://<parent-id> --sort sibling_order
 rune v2 show rune://<id>
@@ -86,6 +88,7 @@ rune v2 runs
 rune v2 artifacts <run-id>
 rune v2 artifact <artifact-id>
 rune v2 edit <id> --title "new title"
+rune v2 edit <id> --state complete
 rune v2 delete <id> --confirm
 rune v2 restore <id>
 rune v2 sync
@@ -101,8 +104,8 @@ quits. Structured Rune edits are revision-checked and recorded in the local
 sync ledger.
 `rune v2 delete` requires `--confirm` and creates a reversible tombstone rather
 than physically removing the item; `rune v2 restore` clears that tombstone.
-The TUI exposes `e`/`E` for title/body editing, `d` plus confirmation for
-tombstoning, and `u` for restore. `rune v2 sync` reports the local change
+The TUI exposes `e`/`E` for title/body editing, `s` for cycling authored Rune
+state, `d` plus confirmation for tombstoning, and `u` for restore. `rune v2 sync` reports the local change
 cursor, pending changes, and visible conflicts. Passing `--remote <directory>`
 exercises the revision-aware push/pull protocol against a disposable
 file-backed development peer, including artifact blobs; hosted authentication

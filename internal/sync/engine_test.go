@@ -93,7 +93,7 @@ func TestFilePeerSyncsEntitiesArtifactsAndConflicts(t *testing.T) {
 		t.Fatalf("shared entity on B = %#v, err=%v", shared, err)
 	}
 	remoteChild, err := storeB.Get(ctx, child.ID, "local")
-	if err != nil || remoteChild.ParentID != entity.ID || remoteChild.SiblingOrder != child.SiblingOrder {
+	if err != nil || remoteChild.ParentID != entity.ID || remoteChild.SiblingOrder != child.SiblingOrder || remoteChild.State != domain.StateReady {
 		t.Fatalf("shared child on B = %#v, err=%v", remoteChild, err)
 	}
 	remoteArtifact, err := storeB.GetArtifact(ctx, artifactID, "local")

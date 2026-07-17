@@ -439,9 +439,10 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 	body := fs.String("body", "", "body text")
 	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
 	order := fs.Int("order", 0, "sibling order; zero appends")
+	state := fs.String("state", "", "Rune state: draft, ready, in_progress, complete, blocked, review, or failed")
 	fromStdin := fs.Bool("stdin", false, "read body from stdin")
 	asNote := fs.Bool("note", false, "capture a note instead of a task")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true})
 	if err != nil {
 		return err
 	}
@@ -474,6 +475,10 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 		kind = domain.KindNote
 		status = ""
 	}
+	parsedState, err := domain.NormalizeRuneState(*state)
+	if err != nil {
+		return err
+	}
 	entity, err := service.Create(context.Background(), domain.Entity{
 		Kind:     kind,
 		Project:  scope.Project,
@@ -487,6 +492,7 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 			return 0
 		}(),
 		Status:    status,
+		State:     parsedState,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	})
@@ -505,6 +511,7 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	workspace := fs.String("workspace", "local", "workspace id")
 	kind := fs.String("kind", "", "note or task")
 	status := fs.String("status", "", "task status")
+	state := fs.String("state", "", "Rune lifecycle state")
 	query := fs.String("query", "", "search title and body")
 	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
 	sortBy := fs.String("sort", "", "updated_at, created_at, title, priority, status, or sibling_order")
@@ -513,7 +520,7 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	global := fs.Bool("global", false, "all projects in the workspace")
 	deleted := fs.Bool("deleted", false, "include deleted tombstones")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true, "parent": true, "sort": true, "deleted": false})
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "state": true, "query": true, "parent": true, "sort": true, "deleted": false})
 	if err != nil {
 		return err
 	}
@@ -542,6 +549,13 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 			return err
 		}
 		options.Status = parsed
+	}
+	if *state != "" {
+		parsed, err := domain.NormalizeRuneState(*state)
+		if err != nil {
+			return err
+		}
+		options.State = parsed
 	}
 	if *parent != "" {
 		parentRune, err := service.Get(context.Background(), *parent)
@@ -575,7 +589,10 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 		return nil
 	}
 	for _, item := range items {
-		status := string(item.Status)
+		status := string(item.State)
+		if status == "" {
+			status = string(item.Status)
+		}
 		if status == "" {
 			status = "note"
 		}
@@ -618,7 +635,8 @@ func runV2Show(args []string, stdout io.Writer, cwd string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "ID: %s\nRef: %s\nKind: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Reference(), entity.Kind, entity.Title, entity.Revision)
+	fmt.Fprintf(stdout, "ID: %s\nRef: %s\nKind: %s\nState: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Reference(), entity.Kind, entity.State, entity.Title, entity.Revision)
+	fmt.Fprintf(stdout, "Facets: %s\n", strings.Join(runeFacetNames(entity.Facets()), ", "))
 	if entity.Project != "" {
 		fmt.Fprintf(stdout, "Project: %s\n", entity.Project)
 	}
@@ -657,10 +675,11 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 	appendBody := fs.String("end", "", "append body")
 	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
 	order := fs.Int("order", 0, "sibling order")
+	state := fs.String("state", "", "Rune lifecycle state")
 	status := fs.String("status", "", "task status")
 	priority := fs.Int("priority", 0, "priority")
 	revision := fs.Int64("revision", 0, "expected revision")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "status": true, "priority": true, "revision": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "state": true, "status": true, "priority": true, "revision": true})
 	if err != nil {
 		return err
 	}
@@ -695,6 +714,14 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 		update.SiblingOrder = order
 		changed = true
 	}
+	if provided["state"] {
+		parsed, err := domain.NormalizeRuneState(*state)
+		if err != nil {
+			return err
+		}
+		update.State = &parsed
+		changed = true
+	}
 	if provided["status"] {
 		parsed, err := domain.NormalizeStatus(*status)
 		if err != nil {
@@ -708,7 +735,7 @@ func runV2Edit(args []string, stdout io.Writer, cwd string) error {
 		changed = true
 	}
 	if !changed {
-		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --status, or --priority")
+		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --state, --status, or --priority")
 	}
 	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
 	if err != nil {
@@ -1802,6 +1829,14 @@ func readAll(r io.Reader) (string, error) {
 
 func stringUpdate(value string) *string {
 	return &value
+}
+
+func runeFacetNames(facets []domain.RuneFacet) []string {
+	names := make([]string, len(facets))
+	for index, facet := range facets {
+		names[index] = string(facet)
+	}
+	return names
 }
 
 func printItems(w io.Writer, home string, items []*core.Item) {

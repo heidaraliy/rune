@@ -25,7 +25,7 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestOpenUpgradesSlice4DatabaseToSlice5Schema(t *testing.T) {
+func TestOpenUpgradesSlice4DatabaseToSlice6Schema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rune-v2.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -76,8 +76,8 @@ func TestOpenUpgradesSlice4DatabaseToSlice5Schema(t *testing.T) {
 	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("schema version = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("schema version = %d, want 6", version)
 	}
 	var firstOrder, secondOrder int
 	if err := store.db.QueryRow("SELECT sibling_order FROM entities WHERE id='old-a'").Scan(&firstOrder); err != nil {
@@ -88,6 +88,13 @@ func TestOpenUpgradesSlice4DatabaseToSlice5Schema(t *testing.T) {
 	}
 	if firstOrder != 1 || secondOrder != 2 {
 		t.Fatalf("migrated sibling orders = %d, %d; want 1, 2", firstOrder, secondOrder)
+	}
+	var facets, state string
+	if err := store.db.QueryRow("SELECT facets_json, state FROM entities WHERE id='old-b'").Scan(&facets, &state); err != nil {
+		t.Fatal(err)
+	}
+	if facets != `["document"]` || state != string(domain.StateDraft) {
+		t.Fatalf("migrated Rune metadata = facets %q state %q", facets, state)
 	}
 }
 
@@ -118,6 +125,57 @@ func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
 	}
 	if got.SiblingOrder != 1 {
 		t.Fatalf("task sibling order = %d, want 1", got.SiblingOrder)
+	}
+	if got.State != domain.StateReady || len(got.Facets()) != 2 || !got.HasFacet(domain.FacetTask) {
+		t.Fatalf("task Rune metadata = %#v", got)
+	}
+}
+
+func TestRuneLifecycleStateIsStoredForNotesAndTasks(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	note, err := store.Create(ctx, domain.Rune{Kind: domain.KindNote, WorkspaceID: "local", Title: "working note"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note.State != domain.StateDraft || note.Status != "" || !note.HasFacet(domain.FacetDocument) {
+		t.Fatalf("created note = %#v", note)
+	}
+	ready := domain.StateReady
+	updated, err := store.Update(ctx, note.ID, "local", domain.RuneUpdate{ExpectedRevision: note.Revision, State: &ready})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != domain.StateReady || updated.Status != "" || updated.Revision != 2 {
+		t.Fatalf("updated note = %#v", updated)
+	}
+
+	task, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", Title: "working task", State: domain.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != domain.StateReady || task.Status != domain.StatusReady {
+		t.Fatalf("created task = %#v", task)
+	}
+	inProgress := domain.StateInProgress
+	updated, err = store.Update(ctx, task.ID, "local", domain.RuneUpdate{ExpectedRevision: task.Revision, State: &inProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != domain.StateInProgress || updated.Status != domain.StatusRunning {
+		t.Fatalf("in-progress task = %#v", updated)
+	}
+	complete := domain.StatusCompleted
+	updated, err = store.SetTaskStatus(ctx, task.ID, "local", complete, updated.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != domain.StateComplete || updated.Status != domain.StatusCompleted || updated.FinishedAt == nil {
+		t.Fatalf("completed task = %#v", updated)
+	}
+	completeItems, err := store.List(ctx, domain.RuneQuery{WorkspaceID: "local", State: domain.StateComplete})
+	if err != nil || len(completeItems) != 1 || completeItems[0].ID != task.ID {
+		t.Fatalf("complete Rune query = %#v, err=%v", completeItems, err)
 	}
 }
 
@@ -342,6 +400,61 @@ func TestApplyRemoteChangeIsIdempotentAndConflictSafe(t *testing.T) {
 	}
 }
 
+func TestApplyRemoteLegacyStatusPayloadBackfillsRuneState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	task, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", Title: "remote state", State: domain.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"entity_id":"` + task.ID + `","status":"running","revision":2}`
+	change := domain.Change{
+		ID:          "legacy-status-change",
+		WorkspaceID: "local",
+		OperationID: "legacy-status-operation",
+		ActorID:     "remote-actor",
+		DeviceID:    "remote-device",
+		Kind:        "entity.status",
+		EntityID:    task.ID,
+		Revision:    2,
+		Payload:     payload,
+		CreatedAt:   time.Now().UTC(),
+		Origin:      domain.ChangeOriginRemote,
+	}
+	if _, conflict, err := store.ApplyRemoteChange(ctx, change); err != nil || conflict != nil {
+		t.Fatalf("apply legacy status change = conflict %v, err %v", conflict, err)
+	}
+	updated, err := store.Get(ctx, task.ID, "local")
+	if err != nil || updated.Status != domain.StatusRunning || updated.State != domain.StateInProgress {
+		t.Fatalf("updated task = %#v, err=%v", updated, err)
+	}
+}
+
+func TestApplyRemoteStatusRejectsContradictoryRuneState(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	task, err := store.Create(ctx, domain.Rune{Kind: domain.KindTask, WorkspaceID: "local", Title: "remote consistency", State: domain.StateReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := domain.Change{
+		ID:          "contradictory-status-change",
+		WorkspaceID: "local",
+		OperationID: "contradictory-status-operation",
+		ActorID:     "remote-actor",
+		DeviceID:    "remote-device",
+		Kind:        "entity.status",
+		EntityID:    task.ID,
+		Revision:    2,
+		Payload:     `{"entity_id":"` + task.ID + `","status":"completed","state":"failed","revision":2}`,
+		CreatedAt:   time.Now().UTC(),
+		Origin:      domain.ChangeOriginRemote,
+	}
+	if _, conflict, err := store.ApplyRemoteChange(ctx, change); err == nil || conflict != nil {
+		t.Fatalf("contradictory status apply = conflict %v, err %v", conflict, err)
+	}
+}
+
 func TestSyncStatusAndConflictsAreVisibleWithoutMutatingEntities(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -445,6 +558,10 @@ func TestQueueRunTransitionsTaskAndPersistsEventsAndArtifacts(t *testing.T) {
 	}
 	if _, err := store.SetTaskStatus(ctx, task.ID, "local", domain.StatusReady, 0); err == nil {
 		t.Fatal("active run should own task status")
+	}
+	ready := domain.StateReady
+	if _, err := store.Update(ctx, task.ID, "local", domain.RuneUpdate{ExpectedRevision: queuedTask.Revision, State: &ready}); err == nil {
+		t.Fatal("active run should own task state projection")
 	}
 	for _, status := range []domain.RunStatus{domain.RunStatusRunning, domain.RunStatusReview, domain.RunStatusCompleted} {
 		if _, err := store.SetRunStatus(ctx, run.ID, "local", status, "done", ""); err != nil {

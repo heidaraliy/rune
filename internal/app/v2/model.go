@@ -157,6 +157,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startEdit(inputEditTitle)
 	case "E":
 		m.startEdit(inputEditBody)
+	case "s":
+		return m.advanceSelectedState()
 	case "d":
 		m.startDelete()
 	case "u":
@@ -325,6 +327,29 @@ func (m *Model) startDelete() {
 	m.editRevision = entity.Revision
 	m.input.Blur()
 	m.help = false
+}
+
+func (m Model) advanceSelectedState() (tea.Model, tea.Cmd) {
+	entity := m.currentEntity()
+	if entity == nil {
+		return m.setStatus("Select a note or task to change state.")
+	}
+	if entity.DeletedAt != nil {
+		return m.setStatus("Restore the tombstone before changing state.")
+	}
+	state := entity.State
+	if state == "" {
+		state = domain.RuneStateFromStatus(entity.Status, entity.Kind)
+	}
+	next := domain.NextRuneState(state)
+	updated, err := m.service.Update(context.Background(), entity.ID, domain.Update{ExpectedRevision: entity.Revision, State: &next})
+	if err != nil {
+		return m.setStatus(err.Error())
+	}
+	if err := m.reloadKeeping(updated.ID); err != nil {
+		return m.setStatus(err.Error())
+	}
+	return m.setStatus(fmt.Sprintf("State: %s.", updated.State))
 }
 
 func (m Model) confirmDelete() (tea.Model, tea.Cmd) {
@@ -592,6 +617,7 @@ func (m Model) renderBody(width, height int) string {
 			"n             capture a note",
 			"e             edit selected title",
 			"E             edit selected body",
+			"s             advance selected Rune state",
 			"d             delete selected item",
 			"u             restore selected tombstone",
 			"/             search workspace",
@@ -686,6 +712,10 @@ func (m Model) renderEntityList() []string {
 		status := "     "
 		if entity.IsTask() {
 			kind = "task"
+		}
+		if entity.State != "" {
+			status = string(entity.State)
+		} else if entity.IsTask() {
 			status = string(entity.Status)
 		}
 		if entity.DeletedAt != nil {
@@ -707,6 +737,7 @@ func (m Model) renderEntityDetail(width, height int) []string {
 	}
 	lines := []string{
 		strings.ToUpper(string(entity.Kind)) + "  " + entity.ID,
+		"state: " + runeStateOrLegacy(*entity),
 		"status: " + statusOrNote(*entity),
 		fmt.Sprintf("revision: %d", entity.Revision),
 	}
@@ -840,7 +871,7 @@ func (m Model) renderFooter(width int) string {
 	} else if m.status != "" {
 		text = m.status
 	} else {
-		text = "j/k move · 1-4 views · a task · n note · e/E edit · d delete · u restore · / search · ? help · Q quit"
+		text = "j/k move · 1-4 views · a task · n note · e/E edit · s state · d delete · u restore · / search · ? help · Q quit"
 		if m.activeView == viewWorkspace {
 			text += " · q queue"
 		}
@@ -923,6 +954,13 @@ func statusOrNote(entity domain.Entity) string {
 		return string(entity.Status)
 	}
 	return "note"
+}
+
+func runeStateOrLegacy(entity domain.Entity) string {
+	if entity.State != "" {
+		return string(entity.State)
+	}
+	return string(domain.RuneStateFromStatus(entity.Status, entity.Kind))
 }
 
 func captureStatus(kind domain.Kind) domain.Status {

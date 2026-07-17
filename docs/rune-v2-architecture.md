@@ -1,12 +1,13 @@
 # Rune Architecture RFC
 
-Status: Slice 6B initial canonical Rune/client boundary. The local structured
+Status: Slice 6C first-class Rune state and facet storage. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
 file-backed sync peer, revision-aware push/pull, artifact transfer, visible
-conflict records, stable `rune://` references, explicit sibling ordering, and
-shared query/client contracts are implemented behind the opt-in `rune v2`
-namespace; full facet storage, hosted authentication, server deployment, and
-remote workers remain future work.
+conflict records, stable `rune://` references, explicit sibling ordering,
+shared query/client contracts, persisted facets, and canonical lifecycle state
+are implemented behind the opt-in `rune v2` namespace; custom facet authoring,
+hosted authentication, server deployment, and remote workers remain future
+work.
 
 ## North Star
 
@@ -289,9 +290,24 @@ SQLite-backed implementation. Parent capture/edit/list flows accept short IDs
 and `rune://` references, and migration backfills deterministic sibling order
 for existing rows.
 
-Full facet-specific properties, lifecycle vocabulary, and a first-class
-embedded `sync` API remain separate slices; this boundary does not claim a
-hosted service or replace the legacy Markdown commands.
+Full facet-specific properties and a first-class embedded `sync` API remain
+separate slices; this boundary does not claim a hosted service or replace the
+legacy Markdown commands.
+
+### Slice 6C: first-class facets and Rune lifecycle
+
+Persist document/task facet data and canonical Rune lifecycle state in the
+structured store. Existing task `Status` values remain a compatibility
+projection for the current queue/run implementation, while `state` is the
+authored-object lifecycle shared by notes and tasks: `draft`, `ready`,
+`in_progress`, `complete`, `blocked`, `review`, and `failed`.
+
+The v6 migration backfills facets from the transitional kind and state from
+legacy task status. Queueing keeps a Rune ready, execution moves it through
+`in_progress` and then `complete`/`failed`, and cancellation returns it to
+`ready`. Remote status payloads carry state while accepting older payloads that
+only contain status. The CLI and TUI expose the canonical state without
+removing legacy status commands.
 
 ### Slice 7: additional clients and workers
 
@@ -324,12 +340,26 @@ workers using the same `sync` API and run contract.
 - Query sorting is allow-listed, deterministic, and bounded; no user input is
   interpolated as SQL.
 
+## Slice 6C Acceptance Criteria
+
+- v6 structured databases persist normalized facet data and canonical Rune
+  state, with deterministic migration backfill.
+- Notes and tasks expose state through the shared domain/client contract;
+  tasks retain a synchronized legacy status projection.
+- Queue, run, completion, failure, cancellation, and remote replay preserve
+  state/status consistency and revision semantics.
+- CLI JSON/human output and the TUI display state; state edits remain
+  revision-checked and tombstone-safe.
+- Legacy Markdown commands and source files remain unchanged by structured
+  state migration.
+
 ## Remaining Decisions For Hosted Sync
 
 - remote cursor acknowledgement, retry, and idempotent push/pull protocol
 - authentication provider, actor/device identity, and server deployment shape
 - remote artifact storage, size limits, retention defaults, and secret scanning
 - conflict review/acknowledgement workflow without mutating authored items
-- how document/task facets map to the transitional `Entity` compatibility model
+- how future facet-specific properties map to the transitional `Entity`
+  compatibility model
 - whether child Runes are rendered from links, materialized blocks, or both
 - the first versioned `sync` API shape and local embedded-client boundary

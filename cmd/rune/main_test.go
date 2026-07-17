@@ -188,6 +188,46 @@ func TestRunV2HierarchyAndStableRuneReferences(t *testing.T) {
 	}
 }
 
+func TestRunV2LifecycleStateWorksForNotesAndTasks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "stateful note", "--note", "--state", "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("note capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", "rune://" + noteID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "State: ready") || !strings.Contains(stdout.String(), "Facets: document") {
+		t.Fatalf("note show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "edit", noteID, "--state", "in-progress", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("note state edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--state", "in_progress", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "stateful note") || !strings.Contains(stdout.String(), "in_progress") {
+		t.Fatalf("state list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "stateful task", "--state", "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("task capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "State: ready") || !strings.Contains(stdout.String(), "Facets: document, task") {
+		t.Fatalf("task show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunV2SyncReportsEditsAndReversibleTombstones(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

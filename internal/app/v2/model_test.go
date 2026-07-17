@@ -153,6 +153,11 @@ func TestModelEditsAndConfirmsReversibleTombstones(t *testing.T) {
 		t.Fatalf("edited body entity = %#v", model.entities[0])
 	}
 
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if model.entities[0].State != domain.StateReady || model.entities[0].Revision != 4 {
+		t.Fatalf("advanced Rune state = %#v", model.entities[0])
+	}
+
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	if !strings.Contains(model.View(), "Tombstone selected item?") {
 		t.Fatalf("delete confirmation missing:\n%s", model.View())
