@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -345,7 +346,7 @@ func TestRunV2FileSyncRoundTrip(t *testing.T) {
 	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsA, "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
 		t.Fatalf("A sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, want := range []string{"Remote: configured", "Pushed changes: 1", "Pulled changes: 1", "Pending changes: 0"} {
+	for _, want := range []string{"Protocol: sync.v1", "Remote: configured", "Pushed changes: 1", "Pulled changes: 1", "Pending changes: 0"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("A sync missing %q:\n%s", want, stdout.String())
 		}
@@ -358,6 +359,17 @@ func TestRunV2FileSyncRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Pulled changes: 1") {
 		t.Fatalf("B sync output = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsA, "--db", dbA, "--json"}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("JSON sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil || payload.Protocol != "sync.v1" {
+		t.Fatalf("JSON sync payload=%q, err=%v", stdout.String(), err)
 	}
 	stdout.Reset()
 	stderr.Reset()

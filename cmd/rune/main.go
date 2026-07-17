@@ -932,6 +932,7 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 	var status domain.SyncStatus
 	var conflicts []domain.Conflict
 	var pushed, pulled int
+	var protocol string
 	if strings.TrimSpace(*remote) != "" {
 		_, service, closeStore, _, err := openV2ExecutionService(cwd, "", *workspace, *dbPath, *artifactRoot)
 		if err != nil {
@@ -943,11 +944,12 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 			return err
 		}
 		defer peer.Close()
-		report, err := service.Sync(context.Background(), peer)
+		var syncClient application.SyncClient = service
+		report, err := syncClient.Sync(context.Background(), peer)
 		if err != nil {
 			return err
 		}
-		status, conflicts, pushed, pulled = report.Status, report.Conflicts, report.Pushed, report.Pulled
+		protocol, status, conflicts, pushed, pulled = report.Protocol, report.Status, report.Conflicts, report.Pushed, report.Pulled
 	} else {
 		_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
 		if err != nil {
@@ -965,16 +967,20 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 	}
 	if *jsonOut {
 		data, err := json.MarshalIndent(struct {
+			Protocol  string            `json:"protocol,omitempty"`
 			Status    domain.SyncStatus `json:"status"`
 			Conflicts []domain.Conflict `json:"conflicts"`
 			Pushed    int               `json:"pushed"`
 			Pulled    int               `json:"pulled"`
-		}{Status: status, Conflicts: conflicts, Pushed: pushed, Pulled: pulled}, "", "  ")
+		}{Protocol: protocol, Status: status, Conflicts: conflicts, Pushed: pushed, Pulled: pulled}, "", "  ")
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(stdout, string(data))
 		return nil
+	}
+	if protocol != "" {
+		fmt.Fprintf(stdout, "Protocol: %s\n", protocol)
 	}
 	fmt.Fprintf(stdout, "Workspace: %s\nRemote: %s\nLocal cursor: %d\nPushed changes: %d\nPulled changes: %d\nPending changes: %d\nOpen conflicts: %d\n",
 		status.WorkspaceID, status.RemoteState, status.LocalCursor, pushed, pulled, status.PendingChanges, status.OpenConflicts)

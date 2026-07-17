@@ -1,12 +1,13 @@
 # Rune Architecture RFC
 
-Status: Slice 6D custom facets and facet-scoped properties. The local structured
+Status: Slice 6E embedded sync client boundary. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
 file-backed sync peer, revision-aware push/pull, artifact transfer, visible
 conflict records, stable `rune://` references, explicit sibling ordering,
 shared query/client contracts, persisted facets, canonical lifecycle state, and
 custom facet/property authoring are implemented behind the opt-in `rune v2`
-namespace; hosted authentication, server deployment, and remote workers remain
+namespace. The versioned embedded `sync.v1` request/report boundary is now
+explicit; hosted authentication, server deployment, and remote workers remain
 future work.
 
 ## North Star
@@ -323,6 +324,20 @@ values, and the TUI displays them without creating a second client model.
 Custom facets are labels in this slice, not user-defined schemas or executable
 behavior.
 
+### Slice 6E: embedded sync client boundary
+
+Define the first versioned embedded sync contract as `sync.v1`. The contract
+owns a request, target adapter, and report shape; the application exposes sync
+as an optional `SyncClient` capability instead of making every Rune surface
+know about the local engine. The embedded implementation remains local and
+delegates to the existing revision-aware engine, while the file-backed SQLite
+peer remains a disposable development adapter.
+
+This slice does not add a daemon, network transport, authentication, hosted
+authority, or a new storage schema. Those clients can be added behind the same
+request/report boundary after identity, retry, and server deployment decisions
+are made.
+
 ### Slice 7: additional clients and workers
 
 Add web/mobile capture, queue, review, and observation surfaces plus remote
@@ -380,6 +395,19 @@ workers using the same `sync` API and run contract.
 - No Markdown files, metadata comments, archive paths, or legacy commands are
   changed by this structured property evolution.
 
+## Slice 6E Acceptance Criteria
+
+- `sync.v1` exposes a stable embedded request/report shape with an explicit
+  protocol identifier.
+- The application routes sync through a capability boundary and does not
+  construct the concrete sync engine directly.
+- Sync targets are adapters; the file-backed peer remains usable for
+  deterministic temporary-directory tests and local development.
+- Existing revision, tombstone, conflict, cursor, and artifact behavior is
+  unchanged and remains covered by focused sync and CLI tests.
+- Documentation makes no daemon, hosted service, authentication, or cloud
+  storage claim beyond the implemented local boundary.
+
 ## Remaining Decisions For Hosted Sync
 
 - remote cursor acknowledgement, retry, and idempotent push/pull protocol
@@ -388,4 +416,3 @@ workers using the same `sync` API and run contract.
 - conflict review/acknowledgement workflow without mutating authored items
 - whether custom facets should gain versioned schemas and validation rules
 - whether child Runes are rendered from links, materialized blocks, or both
-- the first versioned `sync` API shape and local embedded-client boundary

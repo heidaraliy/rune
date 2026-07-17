@@ -12,13 +12,18 @@ import (
 	"github.com/heidaraliy/rune/internal/storage/sqlite"
 )
 
-type Peer interface {
+// SyncTarget is the adapter contract used by the sync API to exchange
+// revisioned changes and content-addressed artifacts.
+type SyncTarget interface {
 	ID() string
 	Accept(context.Context, domain.Change) (domain.Change, *domain.Conflict, error)
 	Changes(context.Context, string, int64, int) ([]domain.Change, error)
 	PutArtifact(context.Context, domain.Artifact, []byte) error
 	ReadArtifact(context.Context, domain.Artifact) ([]byte, error)
 }
+
+// Peer remains the compatibility name for the pre-versioned sync harness.
+type Peer = SyncTarget
 
 type FilePeer struct {
 	root      string

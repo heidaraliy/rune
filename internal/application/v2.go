@@ -12,24 +12,31 @@ import (
 	"github.com/heidaraliy/rune/internal/storage/artifacts"
 	"github.com/heidaraliy/rune/internal/storage/markdown"
 	"github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
 
 type V2Service struct {
 	Store         *sqlite.Store
 	WorkspaceID   string
 	ArtifactStore *artifacts.Store
+	syncClient    runesync.Client
 }
 
 func NewV2Service(store *sqlite.Store, workspaceID string) V2Service {
 	if workspaceID == "" {
 		workspaceID = "local"
 	}
-	return V2Service{Store: store, WorkspaceID: workspaceID}
+	return V2Service{
+		Store:       store,
+		WorkspaceID: workspaceID,
+		syncClient:  runesync.EmbeddedClient{Store: store},
+	}
 }
 
 func NewV2ExecutionService(store *sqlite.Store, workspaceID string, artifactStore *artifacts.Store) V2Service {
 	service := NewV2Service(store, workspaceID)
 	service.ArtifactStore = artifactStore
+	service.syncClient = runesync.EmbeddedClient{Store: store, Artifacts: artifactStore}
 	return service
 }
 

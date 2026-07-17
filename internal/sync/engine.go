@@ -14,6 +14,7 @@ import (
 const batchSize = 100
 
 type Report struct {
+	Protocol  string            `json:"protocol,omitempty"`
 	Status    domain.SyncStatus `json:"status"`
 	Pushed    int               `json:"pushed"`
 	Pulled    int               `json:"pulled"`
