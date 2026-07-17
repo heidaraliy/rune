@@ -6,7 +6,10 @@
 - Preserve user-authored Markdown, comments, indentation, and body text whenever possible.
 - Centralize path behavior through `internal/core` helpers.
 - When a behavior intentionally rewrites Markdown layout, document the normalization and add a fixture test.
-- Treat Rune 2 databases, sync cursors, tombstones, and artifact roots as production data too.
-- Keep structured v2 state canonical for new behavior; do not hide it in legacy comments.
+- Treat structured Rune databases, sync cursors, tombstones, and artifact roots as production data too.
+- Keep structured Rune state canonical for identity, facets, hierarchy, lifecycle,
+  relationships, and revisions; do not hide it in legacy comments.
+- Treat Markdown bodies as a first-class editing surface while keeping structured
+  identity and parent/child ordering outside line positions.
 - Make migrations dry-run capable, loss-aware, and source-preserving by default.
 - Store artifact metadata and hashes separately from large blobs; enforce type, size, retention, and secret-handling policy.

@@ -31,5 +31,9 @@ Expected:
 - `python3 tools/agents/scripts/validate_agent_config.py` fails on missing required surfaces.
 - Skill frontmatter includes names and triggerable descriptions.
 - Literal escaped newlines from generated placeholders are rejected.
-- Rune 2 guidance distinguishes legacy Markdown from structured canonical storage.
+- Structured Rune guidance distinguishes legacy Markdown from canonical structured storage.
+- The product contract names `rune` as the main app and `sync` as the shared
+  API/protocol boundary, without requiring a daemon or hosted service.
+- The product contract treats a Rune as the stable object and notes, proposals,
+  braindumps, and tasks as facets or presentations.
 - Migration, sync, run, artifact, and permission guidance is discoverable from the routed docs.

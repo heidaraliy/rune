@@ -12,7 +12,7 @@ worker, artifact, test, and CI-equivalent workflow changes.
 - When building a local binary, verify the command path you are testing and avoid assuming a global install location.
 - When the user runs Rune as `rune`, or asks to update the app they use from PATH, rebuild the shell-resolved binary with `tools/agents/scripts/install_path_binary.sh` after validation instead of stopping at `go build` or `go run`.
 - If a test or smoke could write notes, set `RUNE_HOME` to a temp directory.
-- Use disposable databases, fake agent providers, local artifact roots, and ephemeral ports for Rune 2 tests.
+- Use disposable databases, fake agent providers, local artifact roots, and ephemeral ports for structured Rune tests.
 - Run migration fixtures before trusting structured-store behavior.
 
 ## Validation

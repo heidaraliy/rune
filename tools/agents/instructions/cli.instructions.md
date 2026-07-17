@@ -10,12 +10,17 @@ JSON/API output, project/global scope, capture, links, runs, and artifacts.
 - Preserve interspersed flags when supported by the command.
 - Preserve `RUNE_HOME`, `cwd`, `--project`, `--global` read/search scope, and git-root project detection semantics.
 - Preserve legacy commands while v2 commands are introduced; document cutover rather than silently changing their storage.
-- Route v2 CLI operations through application services and stable domain types.
+- Route CLI operations through the shared Rune application/client contract and
+  stable domain types.
 - Preserve quoted text decoding for `\n`, `\t`, and `\\` where commands already support it.
 - Keep ID resolution prefix-based and keep ambiguity feedback actionable.
 - For `--json`, prefer stable versioned domain/API output rather than ad hoc storage strings.
+- Keep Rune references, query/filter/sort semantics, and lifecycle output
+  consistent with the TUI/app and future `sync` clients.
 - Make queue/run/artifact output observable, scriptable, and explicit about lifecycle state.
 - Avoid smokes against the user's real `~/notes`; use a temp `RUNE_HOME`.
+- Do not imply a `syncd` daemon or hosted `sync` service unless it exists and
+  the behavior is validated.
 
 ## Validation
 

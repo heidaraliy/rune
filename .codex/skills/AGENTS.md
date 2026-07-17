@@ -1,15 +1,16 @@
 # Rune Skills
 
 Load only the skills needed for the current task. Use the full `rune-agent`
-pipeline for cross-module Rune 2 work; use domain skills for narrow changes.
+pipeline for cross-module canonical Rune work; use domain skills for narrow changes.
 
-Rune 2 vocabulary is defined in `docs/rune-v2-architecture.md`. Read that
-document when a task involves the structured domain, graph, sync, agent runs,
-artifacts, or a legacy-to-v2 migration.
+Rune vocabulary is defined in `docs/rune-v2-architecture.md`. Read that
+document when a task involves the canonical Rune model, shared client contract,
+graph, `sync`, agent runs, artifacts, or a legacy-to-Rune migration.
 
 Core routing:
 
-- `rune-agent`: end-to-end feature work and PR-style delivery.
+- `rune-agent`: end-to-end feature work and PR-style delivery across the Rune
+  app and shared `sync` boundary.
 - `rune-feature-architect`: architecture plans before non-trivial edits.
 - `rune-plan-auditor`: plan checks before broad implementation.
 - `rune-code-reviewer`: final diff review.

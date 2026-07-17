@@ -8,14 +8,18 @@
 </pre>
 
 <p>
-  <strong>Rune</strong> is a small terminal-native task tracker for catching ideas before they disappear.
+  <strong>Rune</strong> is a terminal-first workspace for capturing ideas,
+  documents, tasks, and agent work before they disappear.
 </p>
 
 <p>
   <code>rune add "fix stuns" --tag combat,bug</code>
 </p>
 
-Rune stores plain Markdown in `~/notes` (and optionally, within your project's root directory, under `.rune`), detects the current git project, and gives every item a short ID that's easy to use from shell.
+The `rune` app presents one workspace through the CLI and TUI. Its legacy
+commands store plain Markdown in `~/notes` (and optionally under `.rune`),
+while the structured preview adds revisioned Runes, links, runs, artifacts,
+and local `sync` behavior.
 
 </div>
 
@@ -44,8 +48,10 @@ Outside a git project, pass `--project` to write directly to
 
 ## Storage
 
-The default Rune commands write Markdown. The current legacy path has no hosted
-service or sync layer.
+The default legacy commands write Markdown. The current legacy path has no
+hosted service. `sync` is the shared API/protocol boundary for the structured
+workspace; the local file-backed peer is only a development harness, not a
+hosted service or required daemon.
 
 ```text
 ~/notes/
@@ -59,7 +65,8 @@ Set `RUNE_HOME` to use another store.
 RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
 
-Rune 2 is available as an opt-in local structured-store preview. It uses SQLite
+The structured Rune workspace is available as an opt-in local preview through
+the compatibility namespace `rune v2`. It uses SQLite
 at `RUNE_HOME/rune-v2.db` by default, or an explicit `--db` path. Execution
 artifacts live in the content-addressed `RUNE_HOME/rune-v2-artifacts` directory
 by default, and the preview does not sync to the cloud yet:
@@ -82,10 +89,12 @@ rune v2 sync --remote /tmp/rune-remote --artifact-root /tmp/rune-artifacts
 rune v2 tui --project rune
 ```
 
-The Rune 2 TUI is a separate client over the structured store. Use `1`-`4` to
+The structured Rune TUI is a client over the shared application contract and
+structured store. Use `1`-`4` to
 switch workspace, runs, artifacts, and local sync status; `a`/`n` capture;
 `q` queues a task; `x` executes a run; `c` cancels it; `/` searches; and `Q`
-quits. Rune 2 edits are revision-checked and recorded in the local sync ledger.
+quits. Structured Rune edits are revision-checked and recorded in the local
+sync ledger.
 `rune v2 delete` requires `--confirm` and creates a reversible tombstone rather
 than physically removing the item; `rune v2 restore` clears that tombstone.
 The TUI exposes `e`/`E` for title/body editing, `d` plus confirmation for

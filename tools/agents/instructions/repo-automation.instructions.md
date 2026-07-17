@@ -9,7 +9,7 @@ helpers, publishing, and PR hygiene.
 - Keep agent PRs draft by default unless the user asks otherwise.
 - Keep commits scoped to the request and stage only in-scope files.
 - Document any hosted checks that were not run locally.
-- Keep Rune 2 cloud, worker, and artifact deployment claims separate from local validation claims.
+- Keep structured Rune cloud, worker, and artifact deployment claims separate from local validation claims.
 - For install or release docs, prefer commands that work for users without needing Go when release assets exist.
 - Do not add CI or release workflows that write to the user's note store.
 

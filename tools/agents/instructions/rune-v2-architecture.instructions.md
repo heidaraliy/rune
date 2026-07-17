@@ -1,15 +1,21 @@
-# Rune 2 Architecture Instructions
+# Rune Architecture Instructions
 
-Use for structured domain, storage, migration, graph, sync, agent-run,
-artifact, API, worker, or cross-client work.
+Use for canonical Rune, structured domain, storage, migration, graph, `sync`,
+agent-run, artifact, API, worker, or cross-client work.
 
 Read `docs/rune-v2-architecture.md` before planning or editing.
 
 ## Required Decisions
 
-- Classify the change as legacy maintenance, a v2 slice, or a migration adapter.
+- Classify the change as legacy maintenance, canonical Rune work, a structured
+  store slice, or a migration adapter.
+- Identify whether the change owns the Rune object, a facet, or a client
+  presentation.
 - Name the canonical source of truth and the compatibility boundary.
+- Name the shared application/client contract and the `sync` API boundary.
 - Use stable IDs and revision-aware mutations for new entities.
+- Keep parent/child hierarchy, sibling order, and query/filter/sort semantics
+  explicit and shared across clients.
 - Define deletion, conflict, offline, and retry behavior when synchronization is involved.
 - Define agent permission, cancellation, context provenance, and run terminal states for execution work.
 - Define artifact type, hash, size, retention, and secret-handling behavior for generated content.
@@ -25,7 +31,8 @@ For cross-module work, prefer:
 4. CLI, TUI, API, or worker projection
 5. migration fixtures and focused tests
 
-Do not add a new client surface directly against a storage implementation.
+Do not add a new client surface directly against a storage implementation or
+invent a client-specific Rune model.
 
 ## Validation
 
