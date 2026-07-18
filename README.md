@@ -101,6 +101,7 @@ rune v2 sync serve --listen 0.0.0.0:8787 --workspace local --token "$RUNE_SYNC_T
 rune v2 sync --remote https://sync.example --token "$RUNE_SYNC_TOKEN"
 rune v2 tui --project rune
 rune v2 tui --project rune --remote https://sync.example --token "$RUNE_SYNC_TOKEN" --auto-sync
+rune v2 web --listen 0.0.0.0:8788 --token "$RUNE_WEB_TOKEN" --remote https://sync.example --sync-token "$RUNE_SYNC_TOKEN"
 ```
 
 The structured Rune TUI is a client over the shared application contract and
@@ -127,6 +128,16 @@ use it only on a private network without TLS, or provide `--cert` and `--key`
 (or terminate TLS in front of it). Multi-user authorization and production
 deployment remain future work. Set `RUNE_SYNC_REMOTE` and `RUNE_SYNC_TOKEN` to
 make the endpoint the default for CLI and TUI sync commands.
+
+The first browser client is served by `rune v2 web`. It provides an inbox,
+quick capture, detail/body editing, lifecycle changes, reversible tombstones,
+task queueing, recent run activity, search/kind/state filters, and sync status.
+API routes use the same Rune client contract and revision checks as the CLI and
+TUI. The browser asks for the bearer token and keeps it in that browser's
+local storage; use HTTPS (`--cert` and `--key`) when serving beyond a trusted
+local/private network. `--sync-token` (or `RUNE_SYNC_TOKEN`) may be separate
+from the browser/API `--token`. This is an interactive shared-state client,
+not yet an offline PWA with a service-worker outbox.
 
 For notes that should travel with a repository, initialize a project-local
 store:

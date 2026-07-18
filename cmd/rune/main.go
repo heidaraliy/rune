@@ -30,6 +30,7 @@ import (
 	"github.com/heidaraliy/rune/internal/storage/markdown"
 	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
 	runesync "github.com/heidaraliy/rune/internal/sync"
+	runeweb "github.com/heidaraliy/rune/internal/web"
 )
 
 var version = "dev"
@@ -330,7 +331,7 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 
 func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
 	if len(args) == 0 {
-		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, delete, restore, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, tui, or import")
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, delete, restore, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, web, tui, or import")
 	}
 	switch args[0] {
 	case "init":
@@ -369,6 +370,8 @@ func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string)
 		return runV2Artifact(args[1:], stdout, cwd)
 	case "sync":
 		return runV2Sync(args[1:], stdout, cwd)
+	case "web":
+		return runV2Web(args[1:], stdout, cwd)
 	case "tui":
 		return runV2TUI(args[1:], stdout, stderr, cwd)
 	case "import":
@@ -1075,6 +1078,85 @@ func runV2SyncServe(args []string, stdout io.Writer, cwd string) error {
 		return nil
 	}
 	return err
+}
+
+func runV2Web(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 web", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	listen := fs.String("listen", ":8788", "web server listen address")
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	token := fs.String("token", webTokenDefault(), "required browser/API bearer token")
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
+	syncToken := fs.String("sync-token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "token for the configured remote sync peer")
+	cert := fs.String("cert", "", "TLS certificate path")
+	key := fs.String("key", "", "TLS private key path")
+	pos, err := parseFlags(fs, args, map[string]bool{"listen": true, "project": true, "db": true, "workspace": true, "artifact-root": true, "token": true, "remote": true, "sync-token": true, "cert": true, "key": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	if strings.TrimSpace(*token) == "" {
+		return errors.New("v2 web requires --token, RUNE_WEB_TOKEN, or RUNE_SYNC_TOKEN")
+	}
+	if (strings.TrimSpace(*cert) == "") != (strings.TrimSpace(*key) == "") {
+		return errors.New("v2 web requires both --cert and --key for TLS")
+	}
+	scope, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	var syncTarget runesync.SyncTarget
+	var closeSyncTarget func() error
+	if strings.TrimSpace(*remote) != "" {
+		peerToken := strings.TrimSpace(*syncToken)
+		if peerToken == "" {
+			peerToken = strings.TrimSpace(*token)
+		}
+		syncTarget, closeSyncTarget, err = openV2SyncPeer(*remote, peerToken)
+		if err != nil {
+			return err
+		}
+		defer closeSyncTarget()
+	}
+	webServer, err := runeweb.NewServer(service, *workspace, scope.Project, *token, syncTarget)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Addr:              *listen,
+		Handler:           webServer,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       45 * time.Second,
+		WriteTimeout:      45 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	scheme := "http"
+	if strings.TrimSpace(*cert) != "" {
+		scheme = "https"
+	}
+	fmt.Fprintf(stdout, "Rune web listening on %s (workspace %s)\n", syncServerURL(scheme, *listen), *workspace)
+	if scheme == "https" {
+		err = server.ListenAndServeTLS(*cert, *key)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func webTokenDefault() string {
+	if value := strings.TrimSpace(os.Getenv("RUNE_WEB_TOKEN")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN"))
 }
 
 func openV2SyncPeer(remote, token string) (runesync.SyncTarget, func() error, error) {

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111518" />
+    <title>Rune — workspace</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark">R</div>
+          <div>
+            <div class="brand">rune</div>
+            <div class="brand-subtitle">shared workspace</div>
+          </div>
+        </div>
+        <div class="topbar-center">
+          <span class="workspace-label">workspace</span>
+          <span id="workspace-name" class="workspace-name">local</span>
+          <span id="connection-pill" class="connection-pill offline">offline</span>
+        </div>
+        <div class="topbar-actions">
+          <button id="sync-now" class="button button-quiet" type="button">Sync now</button>
+          <button id="refresh" class="icon-button" type="button" aria-label="Refresh workspace">↻</button>
+        </div>
+      </header>
+
+      <section class="auth-strip" aria-label="Server connection">
+        <span class="auth-label">server token</span>
+        <input id="token-input" type="password" autocomplete="off" placeholder="paste token to connect" />
+        <button id="connect" class="button button-small" type="button">Connect</button>
+        <span id="auth-hint" class="auth-hint">The token stays in this browser only.</span>
+      </section>
+
+      <main class="workspace-grid">
+        <section class="inbox-column" aria-label="Rune inbox">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Workspace inbox</div>
+              <h1>Things worth keeping</h1>
+            </div>
+            <span id="rune-count" class="count-badge">0</span>
+          </div>
+
+          <form id="capture-form" class="capture-card">
+            <div class="capture-topline">
+              <span class="capture-label">Quick capture</span>
+              <select id="capture-kind" aria-label="Capture kind">
+                <option value="task">task</option>
+                <option value="note">note</option>
+              </select>
+            </div>
+            <input id="capture-title" required maxlength="240" placeholder="What should Rune remember?" />
+            <textarea id="capture-body" rows="2" placeholder="Add context while it is fresh (optional)"></textarea>
+            <div class="capture-footer">
+              <span class="hint">Enter a title, then keep moving.</span>
+              <button class="button button-primary" type="submit">Capture <span>↵</span></button>
+            </div>
+          </form>
+
+          <div class="filter-bar">
+            <div class="segmented" role="tablist" aria-label="Rune kind filter">
+              <button class="segment active" data-kind="" type="button">All</button>
+              <button class="segment" data-kind="task" type="button">Tasks</button>
+              <button class="segment" data-kind="note" type="button">Notes</button>
+            </div>
+            <select id="state-filter" aria-label="Filter by state">
+              <option value="">Any state</option>
+              <option value="draft">Draft</option>
+              <option value="ready">Ready</option>
+              <option value="in_progress">In progress</option>
+              <option value="complete">Complete</option>
+              <option value="blocked">Blocked</option>
+              <option value="review">Review</option>
+            </select>
+          </div>
+          <label class="search-box">
+            <span>⌕</span>
+            <input id="search" type="search" placeholder="Search titles and bodies" />
+            <kbd>/</kbd>
+          </label>
+
+          <div id="rune-list" class="rune-list" aria-live="polite"></div>
+        </section>
+
+        <section class="detail-column" aria-label="Rune detail">
+          <div id="detail-empty" class="empty-detail">
+            <div class="empty-glyph">✦</div>
+            <h2>Pick a Rune</h2>
+            <p>Capture a thought or select something from the inbox to give it shape.</p>
+          </div>
+
+          <form id="detail-form" class="detail-card hidden">
+            <div class="detail-heading">
+              <div>
+                <div id="detail-kind" class="eyebrow">TASK · RUNE</div>
+                <input id="detail-title" class="detail-title" maxlength="240" />
+              </div>
+              <span id="detail-revision" class="revision-badge">rev 1</span>
+            </div>
+            <div class="detail-meta">
+              <span id="detail-project"></span>
+              <span id="detail-updated"></span>
+            </div>
+            <div class="state-row">
+              <label for="detail-state">Lifecycle</label>
+              <select id="detail-state">
+                <option value="draft">Draft</option>
+                <option value="ready">Ready</option>
+                <option value="in_progress">In progress</option>
+                <option value="complete">Complete</option>
+                <option value="blocked">Blocked</option>
+                <option value="review">Review</option>
+                <option value="failed">Failed</option>
+              </select>
+              <span id="detail-deleted" class="deleted-label hidden">reversible tombstone</span>
+            </div>
+            <textarea id="detail-body" class="detail-body" placeholder="Write the useful version here..."></textarea>
+            <div id="detail-links" class="detail-links"></div>
+            <div class="detail-actions">
+              <button id="save-detail" class="button button-primary" type="submit">Save changes</button>
+              <button id="queue-run" class="button button-quiet" type="button">Queue agent run</button>
+              <button id="delete-detail" class="button button-danger" type="button">Tombstone</button>
+            </div>
+          </form>
+
+          <section class="activity-card">
+            <div class="card-heading">
+              <div>
+                <div class="eyebrow">Execution</div>
+                <h2>Recent activity</h2>
+              </div>
+              <span class="muted">local runs</span>
+            </div>
+            <div id="run-list" class="run-list"></div>
+          </section>
+
+          <section id="sync-card" class="sync-card">
+            <div class="sync-orb"></div>
+            <div class="sync-copy">
+              <div class="eyebrow">Shared state</div>
+              <strong id="sync-title">Local-first</strong>
+              <span id="sync-detail">Connect a remote to move this workspace between devices.</span>
+            </div>
+            <div id="sync-counters" class="sync-counters"></div>
+          </section>
+        </section>
+      </main>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

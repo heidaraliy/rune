@@ -1,14 +1,14 @@
 # Rune Architecture RFC
 
-Status: Slice 7B TUI daily-driver sync. The local structured
+Status: Slice 7C browser dogfood. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
 file-backed and HTTP sync peers, revision-aware push/pull, artifact transfer,
 visible conflict records, stable `rune://` references, explicit sibling
 ordering, shared query/client contracts, persisted facets, canonical lifecycle
 state, and custom facet/property authoring are implemented behind the opt-in
 `rune v2` namespace. The versioned embedded and HTTP `sync.v1` boundaries are
-explicit; multi-user authorization, production deployment, web/mobile clients,
-and remote workers remain future work.
+explicit; multi-user authorization, production deployment, offline PWA/mobile
+clients, and remote workers remain future work.
 
 ## North Star
 
@@ -360,13 +360,16 @@ target construction and lifetime, while the model receives only an injected
 target. `y` starts a non-blocking sync, `--auto-sync` performs one startup
 sync, and `f` cycles the workspace between all Runes, tasks, and notes.
 
-### Slice 7C: web/PWA client
+### Slice 7C: browser client
 
 Build a thin responsive capture, inbox, detail/edit, lifecycle, search, and
-run-observation client over the network API. It must reuse the Rune JSON and
-sync shapes rather than create a browser-specific note/task model. Graph
-visualization, native mobile packaging, and rich artifact review follow after
-the shared API is proven through the TUI and PWA.
+run-observation client over the network API. The first dogfood client is
+embedded in `rune v2 web`: it serves a responsive inbox/detail UI and
+revision-aware JSON routes over `RuneClient`, with optional remote sync and
+token authentication. It reuses Rune JSON and sync shapes rather than creating
+a browser-specific note/task model. Offline PWA caching, graph visualization,
+native mobile packaging, and rich artifact review follow after this shared
+workflow has been used across browser, CLI, and TUI.
 
 ### Slice 7D: additional clients and workers
 
@@ -466,6 +469,21 @@ remote workers using the same `sync` API and run contract.
   remain discoverable in help/footer text.
 - Tests use temporary SQLite stores and file peers; no real `~/notes`, public
   endpoint, or background daemon is required.
+
+## Slice 7C Acceptance Criteria
+
+- `rune v2 web` serves an embedded responsive browser client and requires an
+  explicit bearer token; optional TLS is available through `--cert` and `--key`.
+- Browser capture, list/search/filter, detail/body edit, lifecycle changes,
+  tombstone/restore, and task queueing route through the shared `RuneClient`
+  contract and preserve revision checks.
+- The browser exposes recent run activity, sync status, and sync-now while
+  keeping remote target construction in the CLI/server boundary.
+- JSON routes use bounded request bodies, stable Rune/domain shapes, explicit
+  error responses, and no direct Markdown-store access; the browser token is
+  not persisted by the server.
+- HTTP tests use disposable SQLite/artifact roots and `httptest`; live smokes
+  use a temporary structured database and do not claim offline PWA behavior.
 
 ## Remaining Decisions For Hosted Sync
 

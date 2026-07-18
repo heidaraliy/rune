@@ -550,6 +550,16 @@ func TestRunV2TUIAutoSyncRequiresRemote(t *testing.T) {
 	}
 }
 
+func TestRunV2WebRequiresToken(t *testing.T) {
+	t.Setenv("RUNE_WEB_TOKEN", "")
+	t.Setenv("RUNE_SYNC_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "web", "--db", filepath.Join(t.TempDir(), "rune-v2.db")}, &stdout, &stderr, strings.NewReader(""), t.TempDir())
+	if code != 1 || !strings.Contains(stderr.String(), "v2 web requires --token") {
+		t.Fatalf("web without token code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunV2ImportIsSourcePreservingAndIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)
