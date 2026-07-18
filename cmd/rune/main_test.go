@@ -541,6 +541,15 @@ func TestRunV2TUILaunchesStructuredClient(t *testing.T) {
 	}
 }
 
+func TestRunV2TUIAutoSyncRequiresRemote(t *testing.T) {
+	t.Setenv("RUNE_SYNC_REMOTE", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "tui", "--auto-sync", "--db", filepath.Join(t.TempDir(), "rune-v2.db")}, &stdout, &stderr, strings.NewReader(""), t.TempDir())
+	if code != 1 || !strings.Contains(stderr.String(), "--auto-sync requires --remote") {
+		t.Fatalf("auto-sync without remote code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunV2ImportIsSourcePreservingAndIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("RUNE_HOME", home)

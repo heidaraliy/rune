@@ -12,6 +12,7 @@ import (
 	"github.com/heidaraliy/rune/internal/domain"
 	"github.com/heidaraliy/rune/internal/storage/artifacts"
 	"github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
 
 func testModel(t *testing.T) (Model, application.V2Service) {
@@ -36,6 +37,15 @@ func testModel(t *testing.T) (Model, application.V2Service) {
 
 func press(model Model, msg tea.Msg) Model {
 	updated, _ := model.Update(msg)
+	return updated.(Model)
+}
+
+func runCommand(t *testing.T, model Model, cmd tea.Cmd) Model {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("command is nil")
+	}
+	updated, _ := model.Update(cmd())
 	return updated.(Model)
 }
 
@@ -226,7 +236,117 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "remote id: none") || !strings.Contains(model.View(), "pushed cursor: 0") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "remote id: none") || !strings.Contains(model.View(), "pushed cursor: 0") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) || !strings.Contains(model.View(), "LOCAL PAYLOAD") || !strings.Contains(model.View(), "remote note") {
 		t.Fatalf("sync view =\n%s", model.View())
+	}
+}
+
+func TestModelSyncNowUsesInjectedTargetAndReportsCompletion(t *testing.T) {
+	_, service := testModel(t)
+	if _, err := service.Create(context.Background(), domain.Entity{
+		Kind:    domain.KindNote,
+		Project: "rune",
+		Title:   "sync from TUI",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := runesync.OpenFilePeer(filepath.Join(t.TempDir(), "remote"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	model, err := NewWithOptions(service, "local", "rune", Options{SyncTarget: peer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if !model.syncBusy {
+		t.Fatal("sync did not enter the busy state")
+	}
+	model = runCommand(t, model, cmd)
+	if model.syncBusy {
+		t.Fatal("sync remained busy after completion")
+	}
+	if model.syncError != "" || !strings.Contains(model.status, "Synced") {
+		t.Fatalf("sync result status=%q error=%q", model.status, model.syncError)
+	}
+	if model.sync.RemoteID != peer.ID() || model.sync.PushedCursor == 0 {
+		t.Fatalf("sync status = %#v, peer=%q", model.sync, peer.ID())
+	}
+
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	view := model.View()
+	if !strings.Contains(view, "connection: ready") || !strings.Contains(view, "remote id: file:") {
+		t.Fatalf("configured sync view =\n%s", view)
+	}
+}
+
+func TestModelSyncNowReportsOfflineWithoutLosingLocalState(t *testing.T) {
+	_, service := testModel(t)
+	peer, err := runesync.OpenFilePeer(filepath.Join(t.TempDir(), "remote"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := NewWithOptions(service, "local", "rune", Options{SyncTarget: peer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	model = runCommand(t, model, cmd)
+	if !strings.Contains(model.status, "Sync offline:") || model.syncError == "" {
+		t.Fatalf("offline sync status=%q error=%q", model.status, model.syncError)
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	if !strings.Contains(model.View(), "connection: offline") || !strings.Contains(model.View(), "last error:") {
+		t.Fatalf("offline sync view =\n%s", model.View())
+	}
+}
+
+func TestModelAutoSyncRunsOnceAtStartupAndKindFilterCycles(t *testing.T) {
+	_, service := testModel(t)
+	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindTask, Project: "rune", Title: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindNote, Project: "rune", Title: "note"}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := runesync.OpenFilePeer(filepath.Join(t.TempDir(), "remote"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	model, err := NewWithOptions(service, "local", "rune", Options{SyncTarget: peer, AutoSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
+	if !model.syncBusy {
+		t.Fatal("auto-sync did not mark startup sync busy")
+	}
+	model = runCommand(t, model, model.Init())
+	if model.syncBusy || !strings.Contains(model.status, "Synced") {
+		t.Fatalf("auto-sync result status=%q busy=%v", model.status, model.syncBusy)
+	}
+
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if len(model.entities) != 1 || !model.entities[0].IsTask() || !strings.Contains(model.View(), "filter: tasks") {
+		t.Fatalf("task filter entities=%#v view=\n%s", model.entities, model.View())
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if len(model.entities) != 1 || model.entities[0].Kind != domain.KindNote || !strings.Contains(model.View(), "filter: notes") {
+		t.Fatalf("note filter entities=%#v view=\n%s", model.entities, model.View())
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if len(model.entities) != 2 || !strings.Contains(model.View(), "filter: all") {
+		t.Fatalf("all filter entities=%#v view=\n%s", model.entities, model.View())
 	}
 }

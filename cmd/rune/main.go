@@ -407,19 +407,37 @@ func runV2TUI(args []string, stdout, stderr io.Writer, cwd string) error {
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
 	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "sync HTTP bearer token")
+	autoSync := fs.Bool("auto-sync", false, "sync once when the TUI starts (requires --remote)")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true, "remote": true, "token": true})
 	if err != nil {
 		return err
 	}
 	if len(pos) > 0 {
 		return fmt.Errorf("unexpected argument %q", pos[0])
 	}
+	if *autoSync && strings.TrimSpace(*remote) == "" {
+		return errors.New("v2 tui --auto-sync requires --remote or RUNE_SYNC_REMOTE")
+	}
 	scope, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
 	if err != nil {
 		return err
 	}
 	defer closeService()
-	model, err := v2app.New(service, *workspace, scope.Project)
+	var syncTarget runesync.SyncTarget
+	var closeSyncTarget func() error
+	if strings.TrimSpace(*remote) != "" {
+		syncTarget, closeSyncTarget, err = openV2SyncPeer(*remote, *token)
+		if err != nil {
+			return err
+		}
+		defer closeSyncTarget()
+	}
+	model, err := v2app.NewWithOptions(service, *workspace, scope.Project, v2app.Options{
+		SyncTarget: syncTarget,
+		AutoSync:   *autoSync,
+	})
 	if err != nil {
 		return err
 	}

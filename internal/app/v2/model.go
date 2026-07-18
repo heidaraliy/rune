@@ -14,6 +14,7 @@ import (
 	termansi "github.com/charmbracelet/x/ansi"
 	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/domain"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
 
 // Service is retained as a local name for compatibility with existing TUI
@@ -43,14 +44,34 @@ const (
 
 const statusTTL = 2500 * time.Millisecond
 
+const syncTimeout = 35 * time.Second
+
 type statusClearMsg struct {
 	revision int
+}
+
+type syncFinishedMsg struct {
+	report runesync.Report
+	err    error
+}
+
+// Options configures optional capabilities for the structured TUI. The CLI
+// owns construction and lifetime of the target; the model only consumes the
+// abstract sync contract.
+type Options struct {
+	SyncTarget runesync.SyncTarget
+	AutoSync   bool
 }
 
 type Model struct {
 	service     Service
 	workspaceID string
 	project     string
+	syncClient  application.SyncClient
+	syncTarget  runesync.SyncTarget
+	autoSync    bool
+	syncBusy    bool
+	syncError   string
 
 	entities  []domain.Entity
 	runs      []domain.Run
@@ -67,6 +88,7 @@ type Model struct {
 	input          textinput.Model
 	editRevision   int64
 	query          string
+	kindFilter     domain.Kind
 	help           bool
 	width          int
 	height         int
@@ -77,6 +99,10 @@ type Model struct {
 }
 
 func New(service Service, workspaceID, project string) (Model, error) {
+	return NewWithOptions(service, workspaceID, project, Options{})
+}
+
+func NewWithOptions(service Service, workspaceID, project string, options Options) (Model, error) {
 	if service == nil {
 		return Model{}, errors.New("v2 TUI service is required")
 	}
@@ -86,19 +112,33 @@ func New(service Service, workspaceID, project string) (Model, error) {
 	input := textinput.New()
 	input.Prompt = "> "
 	input.CharLimit = 4096
+	syncClient, _ := service.(application.SyncClient)
+	if options.SyncTarget != nil && syncClient == nil {
+		return Model{}, errors.New("v2 TUI service does not support sync")
+	}
+	if options.AutoSync && options.SyncTarget == nil {
+		return Model{}, errors.New("v2 TUI auto-sync requires a sync target")
+	}
 	m := Model{
 		service:     service,
 		workspaceID: workspaceID,
 		project:     project,
+		syncClient:  syncClient,
+		syncTarget:  options.SyncTarget,
+		autoSync:    options.AutoSync,
 		input:       input,
 	}
 	if err := m.reload(); err != nil {
 		return Model{}, err
 	}
+	m.syncBusy = m.autoSync
 	return m, nil
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.syncBusy {
+		return m.syncCmd()
+	}
 	return nil
 }
 
@@ -113,6 +153,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = ""
 		}
 		return m, nil
+	case syncFinishedMsg:
+		return m.finishSync(msg)
 	case tea.KeyMsg:
 		if m.inputMode != inputNone {
 			return m.updateInput(msg)
@@ -144,6 +186,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.setStatus(err.Error())
 		}
 		return m.setStatus("Refreshed.")
+	case "y":
+		return m.startSync()
+	case "f":
+		return m.cycleKindFilter()
 	case "/":
 		m.inputMode = inputSearch
 		m.input.Placeholder = "search workspace..."
@@ -181,11 +227,80 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.help = false
 		m.query = ""
+		m.kindFilter = ""
 		if err := m.reload(); err != nil {
 			return m.setStatus(err.Error())
 		}
 	}
 	return m, nil
+}
+
+func (m Model) startSync() (tea.Model, tea.Cmd) {
+	if m.syncClient == nil {
+		return m.setStatus("Sync is unavailable for this client.")
+	}
+	if m.syncTarget == nil {
+		return m.setStatus("Sync is not configured. Start TUI with --remote.")
+	}
+	if m.syncBusy {
+		return m.setStatus("Sync already in progress.")
+	}
+	m.syncBusy = true
+	m.syncError = ""
+	return m, m.syncCmd()
+}
+
+func (m Model) syncCmd() tea.Cmd {
+	client := m.syncClient
+	target := m.syncTarget
+	return func() tea.Msg {
+		if client == nil || target == nil {
+			return syncFinishedMsg{err: errors.New("sync is not configured")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+		defer cancel()
+		report, err := client.Sync(ctx, target)
+		return syncFinishedMsg{report: report, err: err}
+	}
+}
+
+func (m Model) finishSync(msg syncFinishedMsg) (tea.Model, tea.Cmd) {
+	m.syncBusy = false
+	if msg.err != nil {
+		m.syncError = msg.err.Error()
+		if err := m.reload(); err != nil {
+			return m.setStatus("Sync offline: " + msg.err.Error() + "; refresh failed: " + err.Error())
+		}
+		return m.setStatus("Sync offline: " + msg.err.Error())
+	}
+	m.syncError = ""
+	if err := m.reload(); err != nil {
+		return m.setStatus("Synced, but refresh failed: " + err.Error())
+	}
+	message := fmt.Sprintf("Synced · pushed %d · pulled %d.", msg.report.Pushed, msg.report.Pulled)
+	if m.sync.OpenConflicts > 0 {
+		message += fmt.Sprintf(" %d conflict(s) need review.", m.sync.OpenConflicts)
+	}
+	return m.setStatus(message)
+}
+
+func (m Model) cycleKindFilter() (tea.Model, tea.Cmd) {
+	if m.activeView != viewWorkspace {
+		return m.setStatus("Kind filters are available from the workspace view.")
+	}
+	switch m.kindFilter {
+	case "":
+		m.kindFilter = domain.KindTask
+	case domain.KindTask:
+		m.kindFilter = domain.KindNote
+	default:
+		m.kindFilter = ""
+	}
+	m.selected = 0
+	if err := m.reload(); err != nil {
+		return m.setStatus(err.Error())
+	}
+	return m.setStatus("Filter: " + kindFilterLabel(m.kindFilter) + ".")
 }
 
 func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -463,7 +578,12 @@ func (m *Model) reload() error {
 }
 
 func (m *Model) reloadKeeping(keepID string) error {
-	entities, err := m.service.List(context.Background(), domain.ListOptions{Project: m.project, Query: m.query, IncludeDeleted: true})
+	entities, err := m.service.List(context.Background(), domain.ListOptions{
+		Project:        m.project,
+		Kind:           m.kindFilter,
+		Query:          m.query,
+		IncludeDeleted: true,
+	})
 	if err != nil {
 		return fmt.Errorf("load v2 workspace: %w", err)
 	}
@@ -614,6 +734,8 @@ func (m Model) renderBody(width, height int) string {
 			"",
 			"j/k or arrows  move selection",
 			"1-4           switch workspace, runs, artifacts, sync",
+			"y             sync now (when a remote is configured)",
+			"f             cycle all, task, and note filters",
 			"a             capture a task",
 			"n             capture a note",
 			"e             edit selected title",
@@ -668,18 +790,38 @@ func (m Model) renderArtifacts(width, height int) string {
 }
 
 func (m Model) renderSync(width, height int) string {
-	remoteID := m.sync.RemoteID
-	remoteNote := "Auth, push, and pull are not configured yet."
-	if remoteID == "" {
-		remoteID = "none"
-	} else {
-		remoteNote = "Push/pull use the configured development peer."
+	if width < 64 {
+		return stackSections(m.renderSyncList(), m.renderSyncDetail(width, height), width, height)
+	}
+	left, right := splitColumns(width)
+	return joinColumns(m.renderSyncList(), m.renderSyncDetail(right.width, height), left.width)
+}
+
+func (m Model) renderSyncList() []string {
+	remoteID := m.configuredRemoteID()
+	remoteState := m.sync.RemoteState
+	if m.syncTarget != nil && remoteState == "not-configured" {
+		remoteState = "configured"
+	}
+	connection := "not configured"
+	if m.syncTarget != nil {
+		connection = "ready"
+	}
+	if m.syncBusy {
+		connection = "syncing"
+	} else if m.syncError != "" {
+		connection = "offline"
+	}
+	remoteNote := "Set --remote to connect a file or HTTP(S) peer."
+	if m.syncTarget != nil {
+		remoteNote = "Press y to sync now; --auto-sync runs once at startup."
 	}
 	lines := []string{
 		"LOCAL SYNC",
 		"",
-		"remote: " + m.sync.RemoteState,
+		"remote: " + remoteState,
 		"remote id: " + remoteID,
+		"connection: " + connection,
 		fmt.Sprintf("local cursor: %d", m.sync.LocalCursor),
 		fmt.Sprintf("pushed cursor: %d", m.sync.PushedCursor),
 		fmt.Sprintf("pulled cursor: %d", m.sync.PulledCursor),
@@ -690,17 +832,54 @@ func (m Model) renderSync(width, height int) string {
 		remoteNote,
 		"Edits are revision-checked; deletes create reversible tombstones.",
 	}
+	if m.syncError != "" {
+		lines = append(lines, "last error: "+m.syncError)
+	}
 	if len(m.conflicts) > 0 {
 		lines = append(lines, "", "CONFLICTS")
-		for _, conflict := range m.conflicts {
-			lines = append(lines, fmt.Sprintf("%s  %s  entity %s  local %d / remote %d", domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision))
+		for index, conflict := range m.conflicts {
+			marker := " "
+			if index == m.selected {
+				marker = ">"
+			}
+			lines = append(lines, fmt.Sprintf("%s %s  %-16s entity %s  %d/%d", marker, domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision))
 		}
 	}
-	return strings.Join(fitLines(lines, width, height), "\n")
+	return lines
+}
+
+func (m Model) renderSyncDetail(width, height int) []string {
+	conflict := m.currentConflict()
+	if conflict == nil {
+		return fitLines([]string{"Select a conflict to inspect both payloads."}, width, height)
+	}
+	lines := []string{
+		"CONFLICT  " + conflict.ID,
+		"kind: " + conflict.Kind,
+		"entity: " + conflict.EntityID,
+		fmt.Sprintf("revisions: local %d · remote %d", conflict.LocalRevision, conflict.RemoteRevision),
+		"status: " + conflict.Status,
+		"",
+		"LOCAL PAYLOAD",
+	}
+	lines = append(lines, strings.Split(conflict.LocalPayload, "\n")...)
+	lines = append(lines, "", "REMOTE PAYLOAD")
+	lines = append(lines, strings.Split(conflict.RemotePayload, "\n")...)
+	return fitLines(lines, width, height)
+}
+
+func (m Model) configuredRemoteID() string {
+	if m.syncTarget != nil && strings.TrimSpace(m.syncTarget.ID()) != "" {
+		return m.syncTarget.ID()
+	}
+	if strings.TrimSpace(m.sync.RemoteID) != "" {
+		return m.sync.RemoteID
+	}
+	return "none"
 }
 
 func (m Model) renderEntityList() []string {
-	lines := []string{fmt.Sprintf("WORKSPACE  %d entities", len(m.entities))}
+	lines := []string{fmt.Sprintf("WORKSPACE  %d entities · filter: %s", len(m.entities), kindFilterLabel(m.kindFilter))}
 	if strings.TrimSpace(m.query) != "" {
 		lines = append(lines, "search: "+m.query)
 	}
@@ -873,7 +1052,7 @@ func (m Model) renderFooter(width int) string {
 	} else if m.status != "" {
 		text = m.status
 	} else {
-		text = "j/k move · 1-4 views · a task · n note · e/E edit · s state · d delete · u restore · / search · ? help · Q quit"
+		text = "j/k move · 1-4 views · y sync · f filter · a task · n note · e/E edit · s state · d delete · u restore · / search · ? help · Q quit"
 		if m.activeView == viewWorkspace {
 			text += " · q queue"
 		}
@@ -892,6 +1071,8 @@ func (m Model) currentCount() int {
 		return len(m.runs)
 	case viewArtifacts:
 		return len(m.artifacts)
+	case viewSync:
+		return len(m.conflicts)
 	default:
 		return 0
 	}
@@ -925,6 +1106,12 @@ func (m Model) currentIDs() []string {
 			ids[i] = m.artifacts[i].ID
 		}
 		return ids
+	case viewSync:
+		ids := make([]string, len(m.conflicts))
+		for i := range m.conflicts {
+			ids[i] = m.conflicts[i].ID
+		}
+		return ids
 	default:
 		return nil
 	}
@@ -949,6 +1136,13 @@ func (m Model) currentArtifact() *domain.Artifact {
 		return nil
 	}
 	return &m.artifacts[m.selected]
+}
+
+func (m Model) currentConflict() *domain.Conflict {
+	if m.activeView != viewSync || m.selected < 0 || m.selected >= len(m.conflicts) {
+		return nil
+	}
+	return &m.conflicts[m.selected]
 }
 
 func statusOrNote(entity domain.Entity) string {
@@ -1024,6 +1218,17 @@ func searchStatus(query string) string {
 		return "Showing all workspace entities."
 	}
 	return "Search: " + query
+}
+
+func kindFilterLabel(kind domain.Kind) string {
+	switch kind {
+	case domain.KindTask:
+		return "tasks"
+	case domain.KindNote:
+		return "notes"
+	default:
+		return "all"
+	}
 }
 
 func indexForID(ids []string, id string) int {

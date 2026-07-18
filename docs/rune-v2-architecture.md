@@ -1,6 +1,6 @@
 # Rune Architecture RFC
 
-Status: Slice 7A network sync dogfood. The local structured
+Status: Slice 7B TUI daily-driver sync. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
 file-backed and HTTP sync peers, revision-aware push/pull, artifact transfer,
 visible conflict records, stable `rune://` references, explicit sibling
@@ -355,8 +355,10 @@ smallest real cross-device path for the existing CLI and future TUI clients.
 
 Add remote setup, sync-now/auto-sync policy, offline status, conflict
 inspection, and compact list/filter improvements to the structured TUI. The
-TUI remains a client over the application and `sync` contracts; it does not
-open its own network or storage path.
+TUI remains a client over the application and `sync` contracts; the CLI owns
+target construction and lifetime, while the model receives only an injected
+target. `y` starts a non-blocking sync, `--auto-sync` performs one startup
+sync, and `f` cycles the workspace between all Runes, tasks, and notes.
 
 ### Slice 7C: web/PWA client
 
@@ -448,6 +450,22 @@ remote workers using the same `sync` API and run contract.
   and authorization are validated before mutation.
 - Tests use `httptest`, disposable SQLite databases, temporary artifact roots,
   and the CLI `run` seam; no real note store or public endpoint is required.
+
+## Slice 7B Acceptance Criteria
+
+- `rune v2 tui --remote <directory|http(s) URL>` configures a sync target while
+  keeping target construction outside the Bubble Tea model; HTTP targets use
+  `--token` or `RUNE_SYNC_TOKEN`.
+- `y` runs sync asynchronously and reports pushed/pulled counts, busy state,
+  offline errors, and open-conflict follow-up without blocking CRUD or run
+  interaction; `--auto-sync` is an explicit one-shot startup policy.
+- The sync view shows configured target identity, connection/error state,
+  cursors, pending changes, and selectable conflict rows with both payloads.
+- Workspace search remains available through `/`, while `f` cycles compact
+  task/note/all kind filters; existing edit, tombstone, restore, and run flows
+  remain discoverable in help/footer text.
+- Tests use temporary SQLite stores and file peers; no real `~/notes`, public
+  endpoint, or background daemon is required.
 
 ## Remaining Decisions For Hosted Sync
 

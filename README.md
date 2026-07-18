@@ -100,14 +100,18 @@ rune v2 sync --remote /tmp/rune-remote --artifact-root /tmp/rune-artifacts
 rune v2 sync serve --listen 0.0.0.0:8787 --workspace local --token "$RUNE_SYNC_TOKEN"
 rune v2 sync --remote https://sync.example --token "$RUNE_SYNC_TOKEN"
 rune v2 tui --project rune
+rune v2 tui --project rune --remote https://sync.example --token "$RUNE_SYNC_TOKEN" --auto-sync
 ```
 
 The structured Rune TUI is a client over the shared application contract and
-structured store. Use `1`-`4` to
-switch workspace, runs, artifacts, and local sync status; `a`/`n` capture;
-`q` queues a task; `x` executes a run; `c` cancels it; `/` searches; and `Q`
-quits. Structured Rune edits are revision-checked and recorded in the local
-sync ledger.
+structured store. Use `1`-`4` to switch workspace, runs, artifacts, and local
+sync status; `a`/`n` capture; `q` queues a task; `x` executes a run; `c`
+cancels it; `/` searches; `f` cycles all/task/note workspace filters; `y`
+starts a background sync when a remote is configured; and `Q` quits. Pass
+`--remote <directory|http(s) URL>` and, for HTTP, `--token` to configure the
+target. `--auto-sync` runs one sync at startup; later syncs are explicit so
+offline and conflict outcomes remain visible. Structured Rune edits are
+revision-checked and recorded in the local sync ledger.
 `rune v2 delete` requires `--confirm` and creates a reversible tombstone rather
 than physically removing the item; `rune v2 restore` clears that tombstone.
 The TUI exposes `e`/`E` for title/body editing, `s` for cycling authored Rune
@@ -122,7 +126,7 @@ artifact protocol. `rune v2 sync serve` is a single-workspace personal server;
 use it only on a private network without TLS, or provide `--cert` and `--key`
 (or terminate TLS in front of it). Multi-user authorization and production
 deployment remain future work. Set `RUNE_SYNC_REMOTE` and `RUNE_SYNC_TOKEN` to
-make the endpoint the default for CLI sync commands.
+make the endpoint the default for CLI and TUI sync commands.
 
 For notes that should travel with a repository, initialize a project-local
 store:
