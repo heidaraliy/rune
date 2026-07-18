@@ -65,11 +65,12 @@ Set `RUNE_HOME` to use another store.
 RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
 
-The structured Rune workspace is available as an opt-in local preview through
-the compatibility namespace `rune v2`. It uses SQLite
-at `RUNE_HOME/rune-v2.db` by default, or an explicit `--db` path. Execution
-artifacts live in the content-addressed `RUNE_HOME/rune-v2-artifacts` directory
-by default, and the preview does not sync to the cloud yet:
+The structured Rune workspace is available as an opt-in preview through the
+compatibility namespace `rune v2`. It uses SQLite at `RUNE_HOME/rune-v2.db` by
+default, or an explicit `--db` path. Execution artifacts live in the
+content-addressed `RUNE_HOME/rune-v2-artifacts` directory by default. The
+preview does not provision a cloud service, but it can connect to a private
+single-workspace sync server for device dogfooding:
 
 ```sh
 rune v2 capture "design sync" --project rune
@@ -96,6 +97,8 @@ rune v2 delete <id> --confirm
 rune v2 restore <id>
 rune v2 sync
 rune v2 sync --remote /tmp/rune-remote --artifact-root /tmp/rune-artifacts
+rune v2 sync serve --listen 0.0.0.0:8787 --workspace local --token "$RUNE_SYNC_TOKEN"
+rune v2 sync --remote https://sync.example --token "$RUNE_SYNC_TOKEN"
 rune v2 tui --project rune
 ```
 
@@ -113,8 +116,13 @@ state, and displays custom facets and properties alongside the selected Rune.
 local change cursor, pending changes, and visible conflicts. A remote sync
 report identifies the embedded `sync.v1` contract. Passing
 `--remote <directory>` exercises the revision-aware push/pull protocol against
-a disposable file-backed development peer, including artifact blobs; hosted
-authentication and a server endpoint are still future work.
+a disposable file-backed development peer, including artifact blobs. Passing
+an HTTP(S) URL uses the authenticated `sync.v1` server and the same change and
+artifact protocol. `rune v2 sync serve` is a single-workspace personal server;
+use it only on a private network without TLS, or provide `--cert` and `--key`
+(or terminate TLS in front of it). Multi-user authorization and production
+deployment remain future work. Set `RUNE_SYNC_REMOTE` and `RUNE_SYNC_TOKEN` to
+make the endpoint the default for CLI sync commands.
 
 For notes that should travel with a repository, initialize a project-local
 store:
@@ -175,7 +183,7 @@ rune init [--project lune]
 rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
-  rune v2 <init|capture|list|show|edit|delete|restore|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync|tui|import> ...
+  rune v2 <init|capture|list|show|edit|delete|restore|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync [serve]|tui|import> ...
 ```
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can

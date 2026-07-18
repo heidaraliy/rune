@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	v2app "github.com/heidaraliy/rune/internal/app/v2"
 	"github.com/heidaraliy/rune/internal/handoff"
+	v2artifacts "github.com/heidaraliy/rune/internal/storage/artifacts"
+	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
 
 type captureProgram struct {
@@ -375,6 +379,66 @@ func TestRunV2FileSyncRoundTrip(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"v2", "list", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "shared from A") {
 		t.Fatalf("B list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2HTTPSyncRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	root := t.TempDir()
+	serverStore, err := v2sqlite.Open(filepath.Join(root, "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	serverArtifacts, err := v2artifacts.Open(filepath.Join(root, "server-artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncServer, err := runesync.NewServer(serverStore, serverArtifacts, "local", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(syncServer)
+	defer httpServer.Close()
+
+	dbA := filepath.Join(root, "a.db")
+	dbB := filepath.Join(root, "b.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "capture", "shared over HTTP", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", httpServer.URL, "--token", "secret", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("HTTP A sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Protocol: sync.v1", "Pushed changes: 1", "Pulled changes: 1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("HTTP A sync missing %q:\n%s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	t.Setenv("RUNE_SYNC_REMOTE", httpServer.URL)
+	t.Setenv("RUNE_SYNC_TOKEN", "secret")
+	if code := run([]string{"v2", "sync", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Pulled changes: 1") {
+		t.Fatalf("HTTP B sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "shared over HTTP") {
+		t.Fatalf("HTTP B list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2SyncServeRequiresToken(t *testing.T) {
+	t.Setenv("RUNE_HOME", t.TempDir())
+	t.Setenv("RUNE_SYNC_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "sync", "serve", "--listen", "127.0.0.1:0"}, &stdout, &stderr, strings.NewReader(""), t.TempDir()); code != 1 || !strings.Contains(stderr.String(), "requires --token") {
+		t.Fatalf("serve without token code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -915,14 +916,18 @@ func runV2Status(args []string, stdout io.Writer, cwd string) error {
 }
 
 func runV2Sync(args []string, stdout io.Writer, cwd string) error {
+	if len(args) > 0 && args[0] == "serve" {
+		return runV2SyncServe(args[1:], stdout, cwd)
+	}
 	fs := flag.NewFlagSet("rune v2 sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
-	remote := fs.String("remote", "", "file-backed development peer directory")
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
 	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "sync HTTP bearer token")
 	jsonOut := fs.Bool("json", false, "json")
-	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "remote": true, "artifact-root": true})
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "remote": true, "artifact-root": true, "token": true})
 	if err != nil {
 		return err
 	}
@@ -939,11 +944,11 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 			return err
 		}
 		defer closeStore()
-		peer, err := runesync.OpenFilePeer(*remote)
+		peer, closePeer, err := openV2SyncPeer(*remote, *token)
 		if err != nil {
 			return err
 		}
-		defer peer.Close()
+		defer closePeer()
 		var syncClient application.SyncClient = service
 		report, err := syncClient.Sync(context.Background(), peer)
 		if err != nil {
@@ -989,6 +994,93 @@ func runV2Sync(args []string, stdout io.Writer, cwd string) error {
 			domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision)
 	}
 	return nil
+}
+
+func runV2SyncServe(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 sync serve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	listen := fs.String("listen", ":8787", "listen address")
+	dbPath := fs.String("db", strings.TrimSpace(os.Getenv("RUNE_SYNC_DB")), "server database path")
+	workspace := fs.String("workspace", "local", "server workspace id")
+	artifactRoot := fs.String("artifact-root", strings.TrimSpace(os.Getenv("RUNE_SYNC_ARTIFACTS")), "server artifact directory")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "required sync HTTP bearer token")
+	cert := fs.String("cert", "", "TLS certificate path")
+	key := fs.String("key", "", "TLS private key path")
+	pos, err := parseFlags(fs, args, map[string]bool{"listen": true, "db": true, "workspace": true, "artifact-root": true, "token": true, "cert": true, "key": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	if strings.TrimSpace(*token) == "" {
+		return errors.New("v2 sync serve requires --token or RUNE_SYNC_TOKEN")
+	}
+	if (strings.TrimSpace(*cert) == "") != (strings.TrimSpace(*key) == "") {
+		return errors.New("v2 sync serve requires both --cert and --key for TLS")
+	}
+	scope, err := core.ResolveScope(cwd, false, "")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*dbPath) == "" {
+		*dbPath = filepath.Join(scope.Home, "rune-sync.db")
+	}
+	store, err := v2sqlite.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if strings.TrimSpace(*artifactRoot) == "" {
+		*artifactRoot = filepath.Join(scope.Home, "rune-sync-artifacts")
+	}
+	artifactStore, err := v2artifacts.Open(*artifactRoot)
+	if err != nil {
+		return err
+	}
+	syncServer, err := runesync.NewServer(store, artifactStore, *workspace, *token)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{Addr: *listen, Handler: syncServer}
+	scheme := "http"
+	if strings.TrimSpace(*cert) != "" {
+		scheme = "https"
+	}
+	fmt.Fprintf(stdout, "Rune %s server listening on %s (workspace %s)\n", runesync.ProtocolVersion, syncServerURL(scheme, *listen), *workspace)
+	if scheme == "https" {
+		err = server.ListenAndServeTLS(*cert, *key)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func openV2SyncPeer(remote, token string) (runesync.SyncTarget, func() error, error) {
+	remote = strings.TrimSpace(remote)
+	if strings.HasPrefix(strings.ToLower(remote), "http://") || strings.HasPrefix(strings.ToLower(remote), "https://") {
+		peer, err := runesync.OpenHTTPPeer(remote, token)
+		if err != nil {
+			return nil, nil, err
+		}
+		return peer, peer.Close, nil
+	}
+	peer, err := runesync.OpenFilePeer(remote)
+	if err != nil {
+		return nil, nil, err
+	}
+	return peer, peer.Close, nil
+}
+
+func syncServerURL(scheme, listen string) string {
+	listen = strings.TrimSpace(listen)
+	if strings.HasPrefix(listen, ":") {
+		listen = "localhost" + listen
+	}
+	return scheme + "://" + listen
 }
 
 func runV2Search(args []string, stdout io.Writer, cwd string) error {
@@ -2321,7 +2413,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
-	  rune v2 <init|capture|list|show|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync|tui|import> ...
+	  rune v2 <init|capture|list|show|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync [serve]|tui|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global

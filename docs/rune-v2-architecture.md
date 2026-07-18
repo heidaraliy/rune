@@ -1,14 +1,14 @@
 # Rune Architecture RFC
 
-Status: Slice 6E embedded sync client boundary. The local structured
+Status: Slice 7A network sync dogfood. The local structured
 preview, fake-provider loop, Bubble Tea client, revision cursor ledger,
-file-backed sync peer, revision-aware push/pull, artifact transfer, visible
-conflict records, stable `rune://` references, explicit sibling ordering,
-shared query/client contracts, persisted facets, canonical lifecycle state, and
-custom facet/property authoring are implemented behind the opt-in `rune v2`
-namespace. The versioned embedded `sync.v1` request/report boundary is now
-explicit; hosted authentication, server deployment, and remote workers remain
-future work.
+file-backed and HTTP sync peers, revision-aware push/pull, artifact transfer,
+visible conflict records, stable `rune://` references, explicit sibling
+ordering, shared query/client contracts, persisted facets, canonical lifecycle
+state, and custom facet/property authoring are implemented behind the opt-in
+`rune v2` namespace. The versioned embedded and HTTP `sync.v1` boundaries are
+explicit; multi-user authorization, production deployment, web/mobile clients,
+and remote workers remain future work.
 
 ## North Star
 
@@ -338,10 +338,38 @@ authority, or a new storage schema. Those clients can be added behind the same
 request/report boundary after identity, retry, and server deployment decisions
 are made.
 
-### Slice 7: additional clients and workers
+### Slice 7A: network sync dogfood
 
-Add web/mobile capture, queue, review, and observation surfaces plus remote
-workers using the same `sync` API and run contract.
+Expose the `sync.v1` boundary over authenticated HTTP for one configured
+workspace. The HTTP peer preserves the existing revision-aware change and
+content-addressed artifact exchange, while `rune v2 sync serve` provides a
+self-hostable SQLite-backed personal server. CLI endpoint/token configuration
+and optional TLS make the path usable over a private network without changing
+the local file-backed development peer.
+
+This slice does not claim multi-user authorization, hosted deployment, public
+internet hardening, or a browser API for queries and commands. It is the
+smallest real cross-device path for the existing CLI and future TUI clients.
+
+### Slice 7B: TUI daily-driver sync
+
+Add remote setup, sync-now/auto-sync policy, offline status, conflict
+inspection, and compact list/filter improvements to the structured TUI. The
+TUI remains a client over the application and `sync` contracts; it does not
+open its own network or storage path.
+
+### Slice 7C: web/PWA client
+
+Build a thin responsive capture, inbox, detail/edit, lifecycle, search, and
+run-observation client over the network API. It must reuse the Rune JSON and
+sync shapes rather than create a browser-specific note/task model. Graph
+visualization, native mobile packaging, and rich artifact review follow after
+the shared API is proven through the TUI and PWA.
+
+### Slice 7D: additional clients and workers
+
+Add richer web/mobile capture, queue, review, and observation surfaces plus
+remote workers using the same `sync` API and run contract.
 
 ## Slice 6A Acceptance Criteria
 
@@ -408,10 +436,24 @@ workers using the same `sync` API and run contract.
 - Documentation makes no daemon, hosted service, authentication, or cloud
   storage claim beyond the implemented local boundary.
 
+## Slice 7A Acceptance Criteria
+
+- An authenticated HTTP `SyncTarget` round-trips Rune changes, tombstones,
+  conflicts, cursors, runs, and content-addressed artifacts through `sync.v1`.
+- `rune v2 sync --remote <http(s) URL>` uses the HTTP peer while directory
+  remotes retain their existing file-backed behavior.
+- `rune v2 sync serve` binds one explicit workspace, requires a bearer token,
+  supports optional TLS, and never touches legacy Markdown storage.
+- Server request sizes, artifact metadata, workspace scope, protocol version,
+  and authorization are validated before mutation.
+- Tests use `httptest`, disposable SQLite databases, temporary artifact roots,
+  and the CLI `run` seam; no real note store or public endpoint is required.
+
 ## Remaining Decisions For Hosted Sync
 
 - remote cursor acknowledgement, retry, and idempotent push/pull protocol
-- authentication provider, actor/device identity, and server deployment shape
+- multi-user authentication, actor/device identity binding, and production
+  server deployment shape
 - remote artifact storage, size limits, retention defaults, and secret scanning
 - conflict review/acknowledgement workflow without mutating authored items
 - whether custom facets should gain versioned schemas and validation rules
