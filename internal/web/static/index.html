@@ -11,8 +11,10 @@
     <div class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <div class="brand-mark">R</div>
-          <div>
+          <pre class="brand-ascii" aria-label="Rune">'||''| '||  ||` `||''|,  .|''|,
+ ||     ||  ||   ||  ||  ||..||
+.||.    `|..'|. .||  ||. `|...</pre>
+          <div class="brand-context">
             <div class="brand">rune</div>
             <div class="brand-subtitle">shared workspace</div>
           </div>
@@ -37,29 +39,31 @@
 
       <main class="workspace-grid">
         <section class="inbox-column" aria-label="Rune inbox">
-          <div class="section-heading">
-            <div>
-              <div class="eyebrow">Workspace inbox</div>
-              <h1>Things worth keeping</h1>
+          <div class="capture-shell">
+            <div class="section-heading">
+              <div>
+                <div class="eyebrow">Workspace inbox</div>
+                <h1>What should Rune remember?</h1>
+              </div>
+              <span id="rune-count" class="count-badge">0</span>
             </div>
-            <span id="rune-count" class="count-badge">0</span>
-          </div>
 
-          <form id="capture-form" class="capture-card">
-            <div class="capture-topline">
-              <span class="capture-label">Quick capture</span>
-              <select id="capture-kind" aria-label="Capture kind">
-                <option value="task">task</option>
-                <option value="note">note</option>
-              </select>
-            </div>
-            <input id="capture-title" required maxlength="240" placeholder="What should Rune remember?" />
-            <textarea id="capture-body" rows="2" placeholder="Add context while it is fresh (optional)"></textarea>
-            <div class="capture-footer">
-              <span class="hint">Enter a title, then keep moving.</span>
-              <button class="button button-primary" type="submit">Capture <span>↵</span></button>
-            </div>
-          </form>
+            <form id="capture-form" class="capture-card">
+              <div class="capture-topline">
+                <span class="capture-label">Quick capture</span>
+                <select id="capture-kind" aria-label="Capture kind">
+                  <option value="task">task</option>
+                  <option value="note">note</option>
+                </select>
+              </div>
+              <input id="capture-title" required maxlength="240" placeholder="Add a title (optional)" />
+              <textarea id="capture-body" rows="2" placeholder="Add context while it is fresh (optional)"></textarea>
+              <div class="capture-footer">
+                <span class="hint">Enter a title, then keep moving.</span>
+                <button class="button button-primary" type="submit">Remember <span>↵</span></button>
+              </div>
+            </form>
+          </div>
 
           <div class="filter-bar">
             <div class="segmented" role="tablist" aria-label="Rune kind filter">
@@ -83,6 +87,10 @@
             <kbd>/</kbd>
           </label>
 
+          <div class="collection-heading">
+            <div class="eyebrow">Workspace collection</div>
+            <h2>Your Runes</h2>
+          </div>
           <div id="rune-list" class="rune-list" aria-live="polite"></div>
         </section>
 

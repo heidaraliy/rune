@@ -163,8 +163,14 @@ func TestModelVisualLayoutFitsCommonTerminalWidths(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			sized := press(model, tea.WindowSizeMsg{Width: test.width, Height: test.height})
 			view := sized.View()
-			if !strings.Contains(view, "INBOX") || !strings.Contains(view, "Lifecycle") {
+			if !strings.Contains(view, "YOUR RUNES") || !strings.Contains(view, "Lifecycle") {
 				t.Fatalf("workspace view lost its hierarchy:\n%s", view)
+			}
+			if test.width >= 64 && !strings.Contains(view, "WHAT SHOULD RUNE REMEMBER?") {
+				t.Fatalf("workspace view lost quick capture:\n%s", view)
+			}
+			if test.width >= 80 && !strings.Contains(view, "'||''|") {
+				t.Fatalf("workspace view lost the Rune wordmark:\n%s", view)
 			}
 			if lines := strings.Split(view, "\n"); len(lines) != test.height {
 				t.Fatalf("view lines = %d, want %d:\n%s", len(lines), test.height, view)
@@ -295,7 +301,7 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatalf("search results = %#v", model.entities)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if !strings.Contains(model.View(), "Rune 2 keyboard guide") || !strings.Contains(model.View(), "queue selected task") {
+	if !strings.Contains(model.View(), "Rune command guide") || !strings.Contains(model.View(), "queue selected task") {
 		t.Fatalf("help view =\n%s", model.View())
 	}
 	if _, err := service.RecordConflict(context.Background(), domain.Conflict{
@@ -312,7 +318,7 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "not-configured") || !strings.Contains(model.View(), "none") || !strings.Contains(model.View(), "pushed") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) || !strings.Contains(model.View(), "LOCAL PAYLOAD") || !strings.Contains(model.View(), "remote note") {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "not-configured") || !strings.Contains(model.View(), "none") || !strings.Contains(model.View(), "pushed") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) || !strings.Contains(model.View(), "LOCAL PAYLOAD") || !strings.Contains(model.View(), "remote note") {
 		t.Fatalf("sync view =\n%s", model.View())
 	}
 }

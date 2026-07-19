@@ -712,7 +712,6 @@ func (m Model) renderHeader(width int) string {
 		project = "all projects"
 	}
 	openCount, doneCount := m.entityStats()
-	brand := theme.TopStyle.Render(" ") + theme.LogoStyle.Render("R") + theme.TopStyle.Render(" ") + theme.LogoStyle.Render("rune") + theme.TopMetaStyle.Render("  shared workspace")
 	meta := theme.TopMetaStyle.Render("  ·  ") + theme.TopLabelStyle.Render("workspace ") + theme.ProjectStyle.Render(m.workspaceID) + theme.TopMetaStyle.Render("  ·  project ") + theme.ProjectStyle.Render(project)
 	if width < 60 {
 		meta = theme.TopMetaStyle.Render("  ·  ") + theme.TopLabelStyle.Render("workspace ") + theme.ProjectStyle.Render(m.workspaceID) + theme.TopMetaStyle.Render("  ·  ") + theme.TodoStyle.Render(fmt.Sprintf("%d open", openCount))
@@ -728,11 +727,26 @@ func (m Model) renderHeader(width int) string {
 		m.tabLabel("4 sync", viewSync),
 	}
 	innerWidth := max(1, width-2)
-	lines := []string{
-		headerLine(innerWidth, brand, meta),
-		theme.TopStyle.Render(" ") + strings.Join(tabs, theme.TopStyle.Render("  ")),
+	if width < 80 {
+		brand := theme.TopStyle.Render(" ") + theme.LogoStyle.Render("RUNE") + theme.TopMetaStyle.Render("  shared workspace")
+		lines := []string{
+			headerLine(innerWidth, brand, meta),
+			theme.TopStyle.Render(" ") + strings.Join(tabs, theme.TopStyle.Render("  ")),
+		}
+		return renderStyledBoxString(width, 4, lines, theme.TopBoxStyle, theme.TopStyle)
 	}
-	return renderStyledBoxString(width, 4, lines, theme.TopBoxStyle, theme.TopStyle)
+	lines := make([]string, 0, len(runeWordmark)+1)
+	for index, wordmarkLine := range runeWordmark {
+		right := ""
+		if index == 0 {
+			right = meta
+		} else if index == 1 {
+			right = theme.TopMetaStyle.Render("shared workspace")
+		}
+		lines = append(lines, headerLine(innerWidth, theme.TopStyle.Render(" ")+theme.LogoStyle.Render(wordmarkLine), right))
+	}
+	lines = append(lines, theme.TopStyle.Render(" ")+strings.Join(tabs, theme.TopStyle.Render("  ")))
+	return renderStyledBoxString(width, len(lines)+2, lines, theme.TopBoxStyle, theme.TopStyle)
 }
 
 func (m Model) tabLabel(label string, tab view) string {
@@ -758,7 +772,7 @@ func headerLine(width int, left, right string) string {
 func (m Model) renderBody(width, height int) string {
 	if m.help {
 		lines := []string{
-			theme.HeadingStyle.Render("Rune 2 keyboard guide"),
+			theme.HeadingStyle.Render("Rune command guide"),
 			"",
 			theme.TopLabelStyle.Render("j/k or arrows") + "  move selection",
 			theme.TopLabelStyle.Render("1-4") + "           switch inbox, runs, artifacts, sync",
@@ -956,7 +970,7 @@ func (m Model) configuredRemoteID() string {
 
 func (m Model) renderStyledEntityList(width int, compact bool) []string {
 	if compact {
-		heading := renderTwoColumnLine(width, theme.HeadingStyle.Render("INBOX"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities))))
+		heading := renderTwoColumnLine(width, theme.HeadingStyle.Render("YOUR RUNES"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities))))
 		if len(m.entities) == 0 {
 			return []string{heading, theme.TopMetaStyle.Render("Nothing here yet.")}
 		}
@@ -968,7 +982,10 @@ func (m Model) renderStyledEntityList(width int, compact bool) []string {
 		return []string{heading}
 	}
 	lines := []string{
-		renderTwoColumnLine(width, theme.HeadingStyle.Render("INBOX"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities)))),
+		theme.HeadingStyle.Render("WHAT SHOULD RUNE REMEMBER?"),
+		theme.TopMetaStyle.Render("a task · n note · / search"),
+		renderDashedRule(width),
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("YOUR RUNES"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities)))),
 		theme.TopMetaStyle.Render("filter: " + kindFilterLabel(m.kindFilter)),
 	}
 	if strings.TrimSpace(m.query) != "" {
@@ -1239,7 +1256,7 @@ func (m Model) renderFooter(width int) string {
 	} else if m.status != "" {
 		return renderStyledBoxString(width, 3, []string{theme.StatusStyle.Render(" " + m.status)}, theme.FooterBoxStyle.Background(theme.CosmicViolet), theme.StatusStyle)
 	} else {
-		text = "j/k move · 1-4 views · y sync · f filter · a task · n note · e/E edit · s state · d/u tombstone/restore · / search · ? help · Q quit"
+		text = "j/k move · 1-4 views · a/n capture · e/E edit · s state · d/u tombstone/restore · / search · ? commands · Q quit"
 		if m.activeView == viewWorkspace {
 			text += " · q queue"
 		}
@@ -1248,7 +1265,7 @@ func (m Model) renderFooter(width int) string {
 		}
 	}
 	if m.inputMode == inputNone && width < 64 {
-		text = "j/k · 1-4 views · a/n capture · e/E edit · ? help · Q quit"
+		text = "j/k · 1-4 · a/n · e/E edit · d/u tomb/restore · ? commands · Q quit"
 		return renderStyledBoxString(width, 3, []string{theme.FooterTextStyle.Render(" " + truncate(text, max(1, width-2)))}, theme.FooterBoxStyle, theme.FooterBarStyle)
 	}
 	lines := []string{text}

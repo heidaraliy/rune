@@ -14,10 +14,16 @@ var (
 	v2BodyStyle        = lipgloss.NewStyle().Foreground(theme.CosmicText)
 	v2MetaStyle        = lipgloss.NewStyle().Foreground(theme.CosmicMuted)
 	v2PanelStyle       = theme.PanelBoxStyle
-	v2SelectedRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("#211b2d"))
+	v2SelectedRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2b2940"))
 	v2MarkerStyle      = lipgloss.NewStyle().Bold(true).Foreground(theme.CosmicViolet)
-	v2DangerStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
+	v2DangerStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ee9ea5"))
 )
+
+var runeWordmark = []string{
+	"'||''| '||  ||` `||''|,  .|''|,",
+	" ||     ||  ||   ||  ||  ||..||",
+	".||.    `|..'|. .||  ||. `|...",
+}
 
 func renderStyledBox(width, height int, lines []string, boxStyle, fillStyle lipgloss.Style) []string {
 	if width <= 0 || height <= 0 {
@@ -75,6 +81,13 @@ func renderRule(width int) string {
 		return ""
 	}
 	return theme.DimStyle.Render(strings.Repeat("─", width))
+}
+
+func renderDashedRule(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return theme.HeadingStyle.Render(strings.Repeat("┄", width))
 }
 
 func renderBadge(value string, style lipgloss.Style) string {
