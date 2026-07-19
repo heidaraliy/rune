@@ -92,7 +92,7 @@ func TestModelRendersWorkspaceLinksWithinCompactWidth(t *testing.T) {
 	}
 	model = press(model, tea.WindowSizeMsg{Width: 72, Height: 20})
 	view := model.View()
-	for _, want := range []string{"Rune 2", "conne", "archi", "references", "proposal", "decision=pending", "workspace:local"} {
+	for _, want := range []string{"rune", "conne", "archi", "references", "proposal", "decision=pending", "workspace local"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -114,6 +114,82 @@ func TestModelRendersWorkspaceLinksWithinCompactWidth(t *testing.T) {
 	for index, line := range strings.Split(narrow, "\n") {
 		if got := lipgloss.Width(line); got > 52 {
 			t.Fatalf("narrow line %d width = %d, want <= 52: %q", index, got, line)
+		}
+	}
+}
+
+func TestModelVisualLayoutFitsCommonTerminalWidths(t *testing.T) {
+	model, service := testModel(t)
+	ctx := context.Background()
+	task, err := service.Create(ctx, domain.Entity{
+		Kind:    domain.KindTask,
+		Project: "rune",
+		Title:   "polish the terminal workspace",
+		Body:    strings.Repeat("Keep the inbox calm, readable, and useful. ", 8),
+		Status:  domain.StatusReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(ctx, domain.Entity{
+		Kind:    domain.KindNote,
+		Project: "rune",
+		Title:   "shared visual language",
+		Body:    "The terminal and browser should feel like the same workspace.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := service.QueueRun(ctx, task.ID, "fake", "local", domain.PermissionReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExecuteRun(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.reloadKeeping(task.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "wide", width: 120, height: 32},
+		{name: "desktop", width: 96, height: 24},
+		{name: "split", width: 72, height: 24},
+		{name: "compact", width: 52, height: 20},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sized := press(model, tea.WindowSizeMsg{Width: test.width, Height: test.height})
+			view := sized.View()
+			if !strings.Contains(view, "INBOX") || !strings.Contains(view, "Lifecycle") {
+				t.Fatalf("workspace view lost its hierarchy:\n%s", view)
+			}
+			if lines := strings.Split(view, "\n"); len(lines) != test.height {
+				t.Fatalf("view lines = %d, want %d:\n%s", len(lines), test.height, view)
+			}
+			for index, line := range strings.Split(view, "\n") {
+				if got := lipgloss.Width(line); got > test.width {
+					t.Fatalf("line %d width = %d, want <= %d: %q", index, got, test.width, line)
+				}
+			}
+		})
+	}
+
+	model = press(model, tea.WindowSizeMsg{Width: 96, Height: 24})
+	for _, test := range []struct {
+		key  rune
+		want string
+	}{
+		{key: '2', want: "EXECUTION"},
+		{key: '3', want: "ARTIFACTS"},
+		{key: '4', want: "LOCAL SYNC"},
+	} {
+		model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.key}})
+		view := model.View()
+		if !strings.Contains(view, test.want) {
+			t.Fatalf("view %q missing %q:\n%s", string(test.key), test.want, view)
 		}
 	}
 }
@@ -236,7 +312,7 @@ func TestModelSearchHelpAndSyncViewAreDiscoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "remote: not-configured") || !strings.Contains(model.View(), "remote id: none") || !strings.Contains(model.View(), "pushed cursor: 0") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) || !strings.Contains(model.View(), "LOCAL PAYLOAD") || !strings.Contains(model.View(), "remote note") {
+	if !strings.Contains(model.View(), "LOCAL SYNC") || !strings.Contains(model.View(), "not-configured") || !strings.Contains(model.View(), "none") || !strings.Contains(model.View(), "pushed") || !strings.Contains(model.View(), "Edits are revision-checked") || !strings.Contains(model.View(), "CONFLICTS") || !strings.Contains(model.View(), domain.DisplayID(note.ID)) || !strings.Contains(model.View(), "LOCAL PAYLOAD") || !strings.Contains(model.View(), "remote note") {
 		t.Fatalf("sync view =\n%s", model.View())
 	}
 }
@@ -279,7 +355,7 @@ func TestModelSyncNowUsesInjectedTargetAndReportsCompletion(t *testing.T) {
 
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	view := model.View()
-	if !strings.Contains(view, "connection: ready") || !strings.Contains(view, "remote id: file:") {
+	if !strings.Contains(view, "ready") || !strings.Contains(view, "remote id") || !strings.Contains(view, "file:") {
 		t.Fatalf("configured sync view =\n%s", view)
 	}
 }
@@ -306,7 +382,7 @@ func TestModelSyncNowReportsOfflineWithoutLosingLocalState(t *testing.T) {
 		t.Fatalf("offline sync status=%q error=%q", model.status, model.syncError)
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if !strings.Contains(model.View(), "connection: offline") || !strings.Contains(model.View(), "last error:") {
+	if !strings.Contains(model.View(), "offline") || !strings.Contains(model.View(), "last error:") {
 		t.Fatalf("offline sync view =\n%s", model.View())
 	}
 }

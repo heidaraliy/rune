@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
+	"github.com/heidaraliy/rune/internal/app/theme"
 	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/domain"
 	runesync "github.com/heidaraliy/rune/internal/sync"
@@ -696,12 +697,12 @@ func (m Model) View() string {
 	if height <= 0 {
 		height = 24
 	}
-	header := m.renderHeader(m.width)
-	footer := m.renderFooter(m.width)
-	bodyHeight := max(1, height-3)
-	body := m.renderBody(m.width, bodyHeight)
-	lines := append(strings.Split(header, "\n"), strings.Split(body, "\n")...)
-	lines = append(lines, footer)
+	headerLines := strings.Split(m.renderHeader(m.width), "\n")
+	footerLines := strings.Split(m.renderFooter(m.width), "\n")
+	bodyHeight := max(1, height-len(headerLines)-len(footerLines))
+	bodyLines := strings.Split(m.renderBody(m.width, bodyHeight), "\n")
+	lines := append(headerLines, bodyLines...)
+	lines = append(lines, footerLines...)
 	return fitScreen(lines, m.width, height)
 }
 
@@ -710,48 +711,73 @@ func (m Model) renderHeader(width int) string {
 	if project == "" {
 		project = "all projects"
 	}
-	line := fmt.Sprintf("Rune 2  ·  workspace:%s  ·  project:%s", m.workspaceID, project)
+	openCount, doneCount := m.entityStats()
+	brand := theme.TopStyle.Render(" ") + theme.LogoStyle.Render("R") + theme.TopStyle.Render(" ") + theme.LogoStyle.Render("rune") + theme.TopMetaStyle.Render("  shared workspace")
+	meta := theme.TopMetaStyle.Render("  ·  ") + theme.TopLabelStyle.Render("workspace ") + theme.ProjectStyle.Render(m.workspaceID) + theme.TopMetaStyle.Render("  ·  project ") + theme.ProjectStyle.Render(project)
+	if width < 60 {
+		meta = theme.TopMetaStyle.Render("  ·  ") + theme.TopLabelStyle.Render("workspace ") + theme.ProjectStyle.Render(m.workspaceID) + theme.TopMetaStyle.Render("  ·  ") + theme.TodoStyle.Render(fmt.Sprintf("%d open", openCount))
+	} else if width < 84 {
+		meta = theme.TopMetaStyle.Render("  ·  ") + theme.TopLabelStyle.Render("workspace ") + theme.ProjectStyle.Render(m.workspaceID) + theme.TopMetaStyle.Render("  ·  ") + theme.ProjectStyle.Render(project) + theme.TopMetaStyle.Render("  ·  ") + theme.TodoStyle.Render(fmt.Sprintf("%d open", openCount))
+	} else {
+		meta += theme.TopMetaStyle.Render("  ·  ") + theme.TodoStyle.Render(fmt.Sprintf("%d open", openCount)) + theme.TopMetaStyle.Render("  ") + theme.DoneCountStyle.Render(fmt.Sprintf("%d done", doneCount))
+	}
 	tabs := []string{
-		m.tabLabel("1 workspace", viewWorkspace),
+		m.tabLabel("1 inbox", viewWorkspace),
 		m.tabLabel("2 runs", viewRuns),
 		m.tabLabel("3 artifacts", viewArtifacts),
 		m.tabLabel("4 sync", viewSync),
 	}
-	return strings.Join([]string{truncate(line, width), truncate(strings.Join(tabs, "  "), width)}, "\n")
+	innerWidth := max(1, width-2)
+	lines := []string{
+		headerLine(innerWidth, brand, meta),
+		theme.TopStyle.Render(" ") + strings.Join(tabs, theme.TopStyle.Render("  ")),
+	}
+	return renderStyledBoxString(width, 4, lines, theme.TopBoxStyle, theme.TopStyle)
 }
 
 func (m Model) tabLabel(label string, tab view) string {
 	if m.activeView == tab {
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render("[" + label + "]")
+		return theme.SelectedStyle.Render(" " + label + " ")
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(label)
+	return theme.TopMetaStyle.Render(label)
+}
+
+func headerLine(width int, left, right string) string {
+	if width <= 0 {
+		return ""
+	}
+	left = clipStyled(left, width)
+	right = clipStyled(right, width)
+	remaining := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if remaining < 1 {
+		return clipStyled(left+" "+right, width)
+	}
+	return left + strings.Repeat(" ", remaining) + right
 }
 
 func (m Model) renderBody(width, height int) string {
 	if m.help {
-		return strings.Join(fitLines([]string{
-			"Rune 2 keyboard guide",
+		lines := []string{
+			theme.HeadingStyle.Render("Rune 2 keyboard guide"),
 			"",
-			"j/k or arrows  move selection",
-			"1-4           switch workspace, runs, artifacts, sync",
-			"y             sync now (when a remote is configured)",
-			"f             cycle all, task, and note filters",
-			"a             capture a task",
-			"n             capture a note",
-			"e             edit selected title",
-			"E             edit selected body",
-			"s             advance selected Rune state",
-			"d             delete selected item",
-			"u             restore selected tombstone",
-			"/             search workspace",
-			"q             queue selected task",
-			"x             execute selected queued run",
-			"c             cancel selected run",
-			"r             refresh from SQLite",
-			"Q / ctrl+c    quit",
+			theme.TopLabelStyle.Render("j/k or arrows") + "  move selection",
+			theme.TopLabelStyle.Render("1-4") + "           switch inbox, runs, artifacts, sync",
+			theme.TopLabelStyle.Render("y") + "             sync now (when a remote is configured)",
+			theme.TopLabelStyle.Render("f") + "             cycle all, task, and note filters",
+			theme.TopLabelStyle.Render("a") + "             capture a task",
+			theme.TopLabelStyle.Render("n") + "             capture a note",
+			theme.TopLabelStyle.Render("e/E") + "           edit title/body",
+			theme.TopLabelStyle.Render("s") + "             advance selected Rune state",
+			theme.TopLabelStyle.Render("d/u") + "           tombstone/restore",
+			theme.TopLabelStyle.Render("/") + "             search workspace",
+			theme.TopLabelStyle.Render("q") + "             queue selected task",
+			theme.TopLabelStyle.Render("x/c") + "           execute/cancel run",
+			theme.TopLabelStyle.Render("r") + "             refresh from SQLite",
+			theme.TopLabelStyle.Render("Q / ctrl+c") + "   quit",
 			"",
-			"esc           close this guide or clear search",
-		}, width, height), "\n")
+			theme.TopMetaStyle.Render("esc") + "           close this guide or clear search",
+		}
+		return strings.Join(renderStyledBox(width, height, lines, v2PanelStyle, theme.SurfaceStyle), "\n")
 	}
 	switch m.activeView {
 	case viewWorkspace:
@@ -767,38 +793,83 @@ func (m Model) renderBody(width, height int) string {
 
 func (m Model) renderWorkspace(width, height int) string {
 	if width < 64 {
-		return stackSections(m.renderEntityList(), m.renderEntityDetail(width, height), width, height)
+		listHeight := compactListHeight(height)
+		detailHeight := max(1, height-listHeight-1)
+		return stackPanels(
+			renderStyledBox(width, listHeight, m.renderStyledEntityList(max(1, width-2), true), v2PanelStyle, theme.SurfaceStyle),
+			renderStyledBox(width, detailHeight, m.renderEntityDetail(max(1, width-2), detailHeight, true), v2PanelStyle, theme.SurfaceStyle),
+			width,
+			height,
+		)
 	}
 	left, right := splitColumns(width)
-	return joinColumns(m.renderEntityList(), m.renderEntityDetail(right.width, height), left.width)
+	return joinColumns(
+		renderStyledBox(left.width, height, m.renderStyledEntityList(left.content, false), v2PanelStyle, theme.SurfaceStyle),
+		renderStyledBox(right.width, height, m.renderEntityDetail(right.content, height, width < 80), v2PanelStyle, theme.SurfaceStyle),
+		left.width,
+	)
 }
 
 func (m Model) renderRuns(width, height int) string {
 	if width < 64 {
-		return stackSections(m.renderRunList(), m.renderRunDetail(width, height), width, height)
+		listHeight := compactListHeight(height)
+		detailHeight := max(1, height-listHeight-1)
+		return stackPanels(
+			renderStyledBox(width, listHeight, m.renderStyledRunList(max(1, width-2)), v2PanelStyle, theme.SurfaceStyle),
+			renderStyledBox(width, detailHeight, m.renderRunDetail(max(1, width-2), detailHeight), v2PanelStyle, theme.SurfaceStyle),
+			width,
+			height,
+		)
 	}
 	left, right := splitColumns(width)
-	return joinColumns(m.renderRunList(), m.renderRunDetail(right.width, height), left.width)
+	return joinColumns(
+		renderStyledBox(left.width, height, m.renderStyledRunList(left.content), v2PanelStyle, theme.SurfaceStyle),
+		renderStyledBox(right.width, height, m.renderRunDetail(right.content, height), v2PanelStyle, theme.SurfaceStyle),
+		left.width,
+	)
 }
 
 func (m Model) renderArtifacts(width, height int) string {
 	if width < 64 {
-		return stackSections(m.renderArtifactList(), m.renderArtifactDetail(width, height), width, height)
+		listHeight := compactListHeight(height)
+		detailHeight := max(1, height-listHeight-1)
+		return stackPanels(
+			renderStyledBox(width, listHeight, m.renderStyledArtifactList(max(1, width-2)), v2PanelStyle, theme.SurfaceStyle),
+			renderStyledBox(width, detailHeight, m.renderArtifactDetail(max(1, width-2), detailHeight), v2PanelStyle, theme.SurfaceStyle),
+			width,
+			height,
+		)
 	}
 	left, right := splitColumns(width)
-	return joinColumns(m.renderArtifactList(), m.renderArtifactDetail(right.width, height), left.width)
+	return joinColumns(
+		renderStyledBox(left.width, height, m.renderStyledArtifactList(left.content), v2PanelStyle, theme.SurfaceStyle),
+		renderStyledBox(right.width, height, m.renderArtifactDetail(right.content, height), v2PanelStyle, theme.SurfaceStyle),
+		left.width,
+	)
 }
 
 func (m Model) renderSync(width, height int) string {
 	if width < 64 {
-		return stackSections(m.renderSyncList(), m.renderSyncDetail(width, height), width, height)
+		listHeight := compactListHeight(height)
+		detailHeight := max(1, height-listHeight-1)
+		return stackPanels(
+			renderStyledBox(width, listHeight, m.renderStyledSyncList(max(1, width-2)), v2PanelStyle, theme.SurfaceStyle),
+			renderStyledBox(width, detailHeight, m.renderSyncDetail(max(1, width-2), detailHeight), v2PanelStyle, theme.SurfaceStyle),
+			width,
+			height,
+		)
 	}
 	left, right := splitColumns(width)
-	return joinColumns(m.renderSyncList(), m.renderSyncDetail(right.width, height), left.width)
+	return joinColumns(
+		renderStyledBox(left.width, height, m.renderStyledSyncList(left.content), v2PanelStyle, theme.SurfaceStyle),
+		renderStyledBox(right.width, height, m.renderSyncDetail(right.content, height), v2PanelStyle, theme.SurfaceStyle),
+		left.width,
+	)
 }
 
-func (m Model) renderSyncList() []string {
+func (m Model) renderStyledSyncList(width int) []string {
 	remoteID := m.configuredRemoteID()
+	remoteDisplay := truncate(remoteID, max(8, width/2))
 	remoteState := m.sync.RemoteState
 	if m.syncTarget != nil && remoteState == "not-configured" {
 		remoteState = "configured"
@@ -812,37 +883,40 @@ func (m Model) renderSyncList() []string {
 	} else if m.syncError != "" {
 		connection = "offline"
 	}
-	remoteNote := "Set --remote to connect a file or HTTP(S) peer."
-	if m.syncTarget != nil {
-		remoteNote = "Press y to sync now; --auto-sync runs once at startup."
-	}
 	lines := []string{
-		"LOCAL SYNC",
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("LOCAL SYNC"), lifecycleBadge(connection)),
+		renderRule(width),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("remote"), theme.ProjectStyle.Render(remoteState)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("remote id"), theme.TopMetaStyle.Render(remoteDisplay)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("local cursor"), fmt.Sprintf("%d", m.sync.LocalCursor)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("pushed"), fmt.Sprintf("%d", m.sync.PushedCursor)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("pulled"), fmt.Sprintf("%d", m.sync.PulledCursor)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("pending"), fmt.Sprintf("%d", m.sync.PendingChanges)),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("conflicts"), fmt.Sprintf("%d", m.sync.OpenConflicts)),
 		"",
-		"remote: " + remoteState,
-		"remote id: " + remoteID,
-		"connection: " + connection,
-		fmt.Sprintf("local cursor: %d", m.sync.LocalCursor),
-		fmt.Sprintf("pushed cursor: %d", m.sync.PushedCursor),
-		fmt.Sprintf("pulled cursor: %d", m.sync.PulledCursor),
-		fmt.Sprintf("pending changes: %d", m.sync.PendingChanges),
-		fmt.Sprintf("open conflicts: %d", m.sync.OpenConflicts),
-		"",
-		"SQLite is authoritative while offline.",
-		remoteNote,
-		"Edits are revision-checked; deletes create reversible tombstones.",
+		theme.TopMetaStyle.Render("Edits are revision-checked · SQLite authoritative offline"),
+	}
+	if m.syncTarget == nil {
+		lines = append(lines, theme.TopMetaStyle.Render("Set --remote to connect a file or HTTP(S) peer."))
+	} else {
+		lines = append(lines, theme.TopMetaStyle.Render("Press y to sync now; --auto-sync runs once at startup."))
 	}
 	if m.syncError != "" {
-		lines = append(lines, "last error: "+m.syncError)
+		lines = append(lines, v2DangerStyle.Render("last error: "+m.syncError))
 	}
 	if len(m.conflicts) > 0 {
-		lines = append(lines, "", "CONFLICTS")
+		lines = append(lines, "", theme.HeadingStyle.Render("CONFLICTS"))
 		for index, conflict := range m.conflicts {
-			marker := " "
+			marker := "  "
 			if index == m.selected {
-				marker = ">"
+				marker = v2MarkerStyle.Render("▸ ")
 			}
-			lines = append(lines, fmt.Sprintf("%s %s  %-16s entity %s  %d/%d", marker, domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision))
+			row := marker + domain.DisplayID(conflict.ID) + "  " + conflict.Kind
+			row = truncate(row, width)
+			if index == m.selected {
+				row = v2SelectedRowStyle.Render(padToWidth(clipStyled(row, width), width))
+			}
+			lines = append(lines, row)
 		}
 	}
 	return lines
@@ -851,20 +925,22 @@ func (m Model) renderSyncList() []string {
 func (m Model) renderSyncDetail(width, height int) []string {
 	conflict := m.currentConflict()
 	if conflict == nil {
-		return fitLines([]string{"Select a conflict to inspect both payloads."}, width, height)
+		return []string{theme.HeadingStyle.Render("Shared state"), theme.TopMetaStyle.Render("Select a conflict to inspect both payloads.")}
 	}
 	lines := []string{
-		"CONFLICT  " + conflict.ID,
-		"kind: " + conflict.Kind,
-		"entity: " + conflict.EntityID,
-		fmt.Sprintf("revisions: local %d · remote %d", conflict.LocalRevision, conflict.RemoteRevision),
-		"status: " + conflict.Status,
+		renderTwoColumnLine(width, v2DangerStyle.Render("CONFLICT · "+domain.DisplayID(conflict.ID)), lifecycleBadge(conflict.Status)),
+		theme.TopMetaStyle.Render("entity " + domain.DisplayID(conflict.EntityID) + fmt.Sprintf("  ·  local %d / remote %d", conflict.LocalRevision, conflict.RemoteRevision)),
+		renderRule(width),
 		"",
-		"LOCAL PAYLOAD",
+		theme.TopLabelStyle.Render("LOCAL PAYLOAD"),
 	}
-	lines = append(lines, strings.Split(conflict.LocalPayload, "\n")...)
-	lines = append(lines, "", "REMOTE PAYLOAD")
-	lines = append(lines, strings.Split(conflict.RemotePayload, "\n")...)
+	for _, line := range wrapPlainText(conflict.LocalPayload, width) {
+		lines = append(lines, v2BodyStyle.Render(line))
+	}
+	lines = append(lines, "", theme.TopLabelStyle.Render("REMOTE PAYLOAD"))
+	for _, line := range wrapPlainText(conflict.RemotePayload, width) {
+		lines = append(lines, v2BodyStyle.Render(line))
+	}
 	return fitLines(lines, width, height)
 }
 
@@ -878,89 +954,172 @@ func (m Model) configuredRemoteID() string {
 	return "none"
 }
 
-func (m Model) renderEntityList() []string {
-	lines := []string{fmt.Sprintf("WORKSPACE  %d entities · filter: %s", len(m.entities), kindFilterLabel(m.kindFilter))}
-	if strings.TrimSpace(m.query) != "" {
-		lines = append(lines, "search: "+m.query)
+func (m Model) renderStyledEntityList(width int, compact bool) []string {
+	if compact {
+		heading := renderTwoColumnLine(width, theme.HeadingStyle.Render("INBOX"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities))))
+		if len(m.entities) == 0 {
+			return []string{heading, theme.TopMetaStyle.Render("Nothing here yet.")}
+		}
+		selected := max(0, min(len(m.entities)-1, m.selected))
+		row := renderEntityRow(m.entities[selected], width, true)
+		if len(row) > 0 {
+			return []string{heading, row[0]}
+		}
+		return []string{heading}
 	}
+	lines := []string{
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("INBOX"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities)))),
+		theme.TopMetaStyle.Render("filter: " + kindFilterLabel(m.kindFilter)),
+	}
+	if strings.TrimSpace(m.query) != "" {
+		lines = append(lines, theme.TopMetaStyle.Render("search / "+m.query))
+	}
+	lines = append(lines, renderRule(width))
 	for index, entity := range m.entities {
-		marker := " "
-		if index == m.selected {
-			marker = ">"
+		lines = append(lines, renderEntityRow(entity, width, index == m.selected)...)
+		if index < len(m.entities)-1 {
+			lines = append(lines, "")
 		}
-		kind := "note"
-		status := "     "
-		if entity.IsTask() {
-			kind = "task"
-		}
-		if entity.State != "" {
-			status = string(entity.State)
-		} else if entity.IsTask() {
-			status = string(entity.Status)
-		}
-		if entity.DeletedAt != nil {
-			status = "deleted"
-		}
-		line := fmt.Sprintf("%s %-4s %-9s %-8s %s", marker, domain.DisplayID(entity.ID), kind, status, entity.Title)
-		lines = append(lines, line)
 	}
 	if len(m.entities) == 0 {
-		lines = append(lines, "", "No notes or tasks in this view.")
+		lines = append(lines, "", theme.HeadingStyle.Render("Nothing here yet."), theme.TopMetaStyle.Render("Capture a note or task to give it shape."))
 	}
 	return lines
 }
 
-func (m Model) renderEntityDetail(width, height int) []string {
+func renderEntityRow(entity domain.Entity, width int, selected bool) []string {
+	marker := "  "
+	if selected {
+		marker = v2MarkerStyle.Render("▸ ")
+	}
+	titleStyle := v2TitleStyle
+	if selected {
+		titleStyle = titleStyle.Foreground(theme.CosmicViolet)
+	}
+	state := runeStateOrLegacy(entity)
+	if entity.DeletedAt != nil {
+		state = "deleted"
+	}
+	top := renderTwoColumnLine(width, marker+titleStyle.Render(entity.Title), theme.DimStyle.Render(domain.DisplayID(entity.ID)))
+	snippet := v2MetaStyle.Render(compactPreview(entity.Body, "No body yet — open to add details.", width))
+	meta := kindBadge(string(entity.Kind)) + " " + lifecycleBadge(state)
+	if date := shortDate(entity.UpdatedAt); date != "" {
+		meta += " " + theme.TopMetaStyle.Render(date)
+	}
+	rows := []string{top, snippet, meta}
+	if selected {
+		for index := range rows {
+			rows[index] = v2SelectedRowStyle.Render(padToWidth(clipStyled(rows[index], width), width))
+		}
+	}
+	return rows
+}
+
+func (m Model) renderEntityDetail(width, height int, compact bool) []string {
 	entity := m.currentEntity()
 	if entity == nil {
-		return fitLines([]string{"Select a note or task."}, width, height)
+		return []string{theme.HeadingStyle.Render("Select a Rune"), theme.TopMetaStyle.Render("Capture a thought or choose one from the inbox.")}
+	}
+	state := runeStateOrLegacy(*entity)
+	if entity.DeletedAt != nil {
+		state = "deleted"
+	}
+	meta := "workspace note"
+	if entity.Project != "" {
+		meta = "project:" + entity.Project
+	}
+	if date := shortDate(entity.UpdatedAt); date != "" {
+		meta += "  ·  " + date
 	}
 	lines := []string{
-		strings.ToUpper(string(entity.Kind)) + "  " + entity.ID,
-		"state: " + runeStateOrLegacy(*entity),
-		"status: " + statusOrNote(*entity) + " · facets: " + strings.Join(runeFacetNames(entity.Facets()), ", "),
-		fmt.Sprintf("revision: %d", entity.Revision),
+		renderTwoColumnLine(width, kindBadge(string(entity.Kind))+theme.TopMetaStyle.Render(" · "+domain.DisplayID(entity.ID)), theme.DimStyle.Render(fmt.Sprintf("rev %d", entity.Revision))),
+		v2TitleStyle.Render(entity.Title),
+		theme.TopMetaStyle.Render(meta),
+		renderRule(width),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("Lifecycle"), lifecycleBadge(state)),
 	}
 	if entity.DeletedAt != nil {
-		lines[1] = "status: deleted (reversible tombstone)"
-		lines = append(lines, "deleted: "+entity.DeletedAt.UTC().Format(time.RFC3339))
+		lines = append(lines, v2DangerStyle.Render("reversible tombstone"))
 	}
-	if entity.Project != "" {
-		lines = append(lines, "project: "+entity.Project)
-	}
-	lines = append(lines, "", entity.Title)
-	if entity.Body != "" {
-		lines = append(lines, "", "Details")
-		lines = append(lines, strings.Split(entity.Body, "\n")...)
-	}
-	if len(m.links) > 0 {
-		lines = append(lines, "", "Links")
+	if compact {
+		lines = append(lines[:3], lines[4:]...)
+		if entity.Body != "" {
+			bodyLines := wrapPlainText(entity.Body, width)
+			if len(bodyLines) > 0 {
+				lines = append(lines, v2BodyStyle.Render(bodyLines[0]))
+			}
+		} else {
+			lines = append(lines, theme.TopMetaStyle.Render("No body yet — press E to add details."))
+		}
 		for _, link := range m.links {
 			other := link.ToID
 			if other == entity.ID {
 				other = link.FromID
 			}
-			lines = append(lines, fmt.Sprintf("%s -> %s", link.Kind, domain.DisplayID(other)))
+			lines = append(lines, theme.TopLabelStyle.Render("link: ")+theme.ProjectStyle.Render(link.Kind)+theme.TopMetaStyle.Render(" → "+domain.DisplayID(other)))
+		}
+		properties := runePropertyLines(*entity)
+		if len(properties) > 1 {
+			for _, property := range properties[1:] {
+				lines = append(lines, theme.TopMetaStyle.Render(property))
+			}
+		}
+		return fitLines(lines, width, height)
+	}
+	lines = append(lines, "", theme.TopLabelStyle.Render("Body"))
+	if entity.Body != "" {
+		for _, line := range wrapPlainText(entity.Body, width) {
+			lines = append(lines, v2BodyStyle.Render(line))
+		}
+	} else {
+		lines = append(lines, theme.TopMetaStyle.Render("No body yet — press E to add details."))
+	}
+	if len(m.links) > 0 {
+		lines = append(lines, "", theme.TopLabelStyle.Render("Connections"))
+		for _, link := range m.links {
+			other := link.ToID
+			if other == entity.ID {
+				other = link.FromID
+			}
+			lines = append(lines, theme.ProjectStyle.Render(link.Kind)+theme.TopMetaStyle.Render(" → "+domain.DisplayID(other)))
 		}
 	}
-	lines = append(lines, runePropertyLines(*entity)...)
+	properties := runePropertyLines(*entity)
+	if len(properties) > 0 {
+		lines = append(lines, "", theme.TopLabelStyle.Render("Properties"))
+		for _, property := range properties[1:] {
+			lines = append(lines, theme.TopMetaStyle.Render(property))
+		}
+	}
 	if m.detailError != "" {
-		lines = append(lines, "", "Error: "+m.detailError)
+		lines = append(lines, "", v2DangerStyle.Render("Error: "+m.detailError))
 	}
 	return fitLines(lines, width, height)
 }
 
-func (m Model) renderRunList() []string {
-	lines := []string{fmt.Sprintf("RUNS  %d attempts", len(m.runs))}
+func (m Model) renderStyledRunList(width int) []string {
+	lines := []string{
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("EXECUTION"), theme.TopMetaStyle.Render(fmt.Sprintf("%d attempts", len(m.runs)))),
+		theme.TopMetaStyle.Render("local agent activity"),
+		renderRule(width),
+	}
 	for index, run := range m.runs {
-		marker := " "
+		status := lifecycleBadge(string(run.Status))
+		top := renderTwoColumnLine(width, theme.ProjectStyle.Render("run "+domain.DisplayID(run.ID)), status)
+		meta := theme.TopMetaStyle.Render("task " + domain.DisplayID(run.TaskID) + " · " + run.Provider + " / " + run.Model)
+		rows := []string{top, meta}
 		if index == m.selected {
-			marker = ">"
+			for row := range rows {
+				rows[row] = v2SelectedRowStyle.Render(padToWidth(clipStyled(rows[row], width), width))
+			}
 		}
-		lines = append(lines, fmt.Sprintf("%s %-8s %-9s task %s %s", marker, domain.DisplayID(run.ID), run.Status, domain.DisplayID(run.TaskID), run.Provider))
+		lines = append(lines, rows...)
+		if index < len(m.runs)-1 {
+			lines = append(lines, "")
+		}
 	}
 	if len(m.runs) == 0 {
-		lines = append(lines, "", "No runs yet. Queue a task with q.")
+		lines = append(lines, "", theme.HeadingStyle.Render("No agent runs yet."), theme.TopMetaStyle.Render("Queue a task with q."))
 	}
 	return lines
 }
@@ -968,71 +1127,99 @@ func (m Model) renderRunList() []string {
 func (m Model) renderRunDetail(width, height int) []string {
 	run := m.currentRun()
 	if run == nil {
-		return fitLines([]string{"Select a run."}, width, height)
+		return []string{theme.HeadingStyle.Render("Select a run"), theme.TopMetaStyle.Render("Queue a task to create an execution attempt.")}
 	}
 	lines := []string{
-		"RUN  " + run.ID,
-		"status: " + string(run.Status),
-		"task: " + domain.DisplayID(run.TaskID),
-		"provider: " + run.Provider + "  model: " + run.Model,
-		"permission: " + string(run.PermissionPolicy),
-		fmt.Sprintf("revision: %d", run.Revision),
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("RUN · "+domain.DisplayID(run.ID)), theme.DimStyle.Render(fmt.Sprintf("rev %d", run.Revision))),
+		renderTwoColumnLine(width, theme.TopLabelStyle.Render("Status"), lifecycleBadge(string(run.Status))),
+		theme.TopMetaStyle.Render("task " + domain.DisplayID(run.TaskID) + "  ·  " + run.Provider + " / " + run.Model),
+		theme.TopMetaStyle.Render("permission: " + string(run.PermissionPolicy)),
+		renderRule(width),
 	}
 	if run.Summary != "" {
-		lines = append(lines, "", "Summary", run.Summary)
+		lines = append(lines, "", theme.TopLabelStyle.Render("Summary"))
+		for _, line := range wrapPlainText(run.Summary, width) {
+			lines = append(lines, v2BodyStyle.Render(line))
+		}
 	}
 	if run.Error != "" {
-		lines = append(lines, "", "Error", run.Error)
+		lines = append(lines, "", v2DangerStyle.Render("Error"))
+		for _, line := range wrapPlainText(run.Error, width) {
+			lines = append(lines, v2DangerStyle.Render(line))
+		}
 	}
 	if run.ContextArtifactID != "" {
-		lines = append(lines, "", "Context artifact", domain.DisplayID(run.ContextArtifactID))
+		lines = append(lines, "", theme.TopLabelStyle.Render("Context artifact"), theme.ProjectStyle.Render(domain.DisplayID(run.ContextArtifactID)))
 	}
 	if len(m.events) > 0 {
-		lines = append(lines, "", "Events")
+		lines = append(lines, "", theme.TopLabelStyle.Render("Events"))
 		for _, event := range m.events {
-			lines = append(lines, fmt.Sprintf("%d  %-8s %s", event.Sequence, event.Kind, event.Payload))
+			lines = append(lines, theme.TopMetaStyle.Render(fmt.Sprintf("%d  %-8s %s", event.Sequence, event.Kind, event.Payload)))
 		}
 	}
 	return fitLines(lines, width, height)
 }
 
-func (m Model) renderArtifactList() []string {
-	lines := []string{fmt.Sprintf("ARTIFACTS  %d files", len(m.artifacts))}
+func (m Model) renderStyledArtifactList(width int) []string {
+	lines := []string{
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("ARTIFACTS"), theme.TopMetaStyle.Render(fmt.Sprintf("%d files", len(m.artifacts)))),
+		theme.TopMetaStyle.Render("durable run outputs"),
+		renderRule(width),
+	}
 	for index, artifact := range m.artifacts {
-		marker := " "
+		top := renderTwoColumnLine(width, theme.ProjectStyle.Render(artifact.Name), theme.DimStyle.Render(domain.DisplayID(artifact.ID)))
+		meta := theme.TopMetaStyle.Render(artifact.Kind + " · " + formatBytes(artifact.SizeBytes))
+		rows := []string{top, meta}
 		if index == m.selected {
-			marker = ">"
+			for row := range rows {
+				rows[row] = v2SelectedRowStyle.Render(padToWidth(clipStyled(rows[row], width), width))
+			}
 		}
-		lines = append(lines, fmt.Sprintf("%s %-8s %-9s %-18s %dB", marker, domain.DisplayID(artifact.ID), artifact.Kind, artifact.Name, artifact.SizeBytes))
+		lines = append(lines, rows...)
+		if index < len(m.artifacts)-1 {
+			lines = append(lines, "")
+		}
 	}
 	if len(m.artifacts) == 0 {
-		lines = append(lines, "", "No artifacts yet.")
+		lines = append(lines, "", theme.HeadingStyle.Render("No artifacts yet."), theme.TopMetaStyle.Render("Completed runs will leave durable outputs here."))
 	}
 	return lines
+}
+
+func formatBytes(value int64) string {
+	if value < 1024 {
+		return fmt.Sprintf("%d B", value)
+	}
+	if value < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(value)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(value)/(1024*1024))
 }
 
 func (m Model) renderArtifactDetail(width, height int) []string {
 	artifact := m.currentArtifact()
 	if artifact == nil {
-		return fitLines([]string{"Select an artifact."}, width, height)
+		return []string{theme.HeadingStyle.Render("Select an artifact"), theme.TopMetaStyle.Render("Run outputs and durable files appear here.")}
 	}
 	lines := []string{
-		"ARTIFACT  " + artifact.ID,
-		"kind: " + artifact.Kind + "  name: " + artifact.Name,
-		"type: " + artifact.MediaType,
-		fmt.Sprintf("size: %d bytes  revision: %d", artifact.SizeBytes, artifact.Revision),
-		"sha256: " + artifact.SHA256,
-		"retention: " + artifact.Retention + "  secret: " + artifact.SecretState,
+		renderTwoColumnLine(width, theme.HeadingStyle.Render("ARTIFACT · "+domain.DisplayID(artifact.ID)), theme.DimStyle.Render(fmt.Sprintf("rev %d", artifact.Revision))),
+		v2TitleStyle.Render(artifact.Name),
+		theme.TopMetaStyle.Render(artifact.Kind + "  ·  " + artifact.MediaType + "  ·  " + formatBytes(artifact.SizeBytes)),
+		renderRule(width),
+		theme.TopLabelStyle.Render("sha256") + theme.TopMetaStyle.Render(" "+artifact.SHA256),
+		theme.TopLabelStyle.Render("retention") + theme.TopMetaStyle.Render(" "+artifact.Retention+"  ·  secret "+artifact.SecretState),
 	}
 	if artifact.RunID != "" {
-		lines = append(lines, "run: "+domain.DisplayID(artifact.RunID))
+		lines = append(lines, theme.TopLabelStyle.Render("run")+theme.TopMetaStyle.Render(" "+domain.DisplayID(artifact.RunID)))
 	}
 	if m.artifactBody != "" {
-		lines = append(lines, "", "Content")
-		lines = append(lines, strings.Split(m.artifactBody, "\n")...)
+		lines = append(lines, "", theme.TopLabelStyle.Render("Content"))
+		for _, line := range wrapPlainText(m.artifactBody, width) {
+			lines = append(lines, v2BodyStyle.Render(line))
+		}
 	}
 	if m.detailError != "" {
-		lines = append(lines, "", "Content unavailable: "+m.detailError)
+		lines = append(lines, "", v2DangerStyle.Render("Content unavailable: "+m.detailError))
 	}
 	return fitLines(lines, width, height)
 }
@@ -1050,9 +1237,9 @@ func (m Model) renderFooter(width int) string {
 	} else if m.inputMode == inputDeleteConfirm {
 		text = "Tombstone selected item? y confirm · n/esc cancel"
 	} else if m.status != "" {
-		text = m.status
+		return renderStyledBoxString(width, 3, []string{theme.StatusStyle.Render(" " + m.status)}, theme.FooterBoxStyle.Background(theme.CosmicViolet), theme.StatusStyle)
 	} else {
-		text = "j/k move · 1-4 views · y sync · f filter · a task · n note · e/E edit · s state · d delete · u restore · / search · ? help · Q quit"
+		text = "j/k move · 1-4 views · y sync · f filter · a task · n note · e/E edit · s state · d/u tombstone/restore · / search · ? help · Q quit"
 		if m.activeView == viewWorkspace {
 			text += " · q queue"
 		}
@@ -1060,7 +1247,19 @@ func (m Model) renderFooter(width int) string {
 			text += " · x execute · c cancel"
 		}
 	}
-	return truncate(text, width)
+	if m.inputMode == inputNone && width < 64 {
+		text = "j/k · 1-4 views · a/n capture · e/E edit · ? help · Q quit"
+		return renderStyledBoxString(width, 3, []string{theme.FooterTextStyle.Render(" " + truncate(text, max(1, width-2)))}, theme.FooterBoxStyle, theme.FooterBarStyle)
+	}
+	lines := []string{text}
+	if m.inputMode == inputNone {
+		lines = wrapPlainText(text, max(1, width-4))
+	}
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, theme.FooterTextStyle.Render(" "+line))
+	}
+	return renderStyledBoxString(width, len(rendered)+2, rendered, theme.FooterBoxStyle, theme.FooterBarStyle)
 }
 
 func (m Model) currentCount() int {
@@ -1076,6 +1275,18 @@ func (m Model) currentCount() int {
 	default:
 		return 0
 	}
+}
+
+func (m Model) entityStats() (open, done int) {
+	for _, entity := range m.entities {
+		state := runeStateOrLegacy(entity)
+		if state == string(domain.StateComplete) || entity.Status == domain.StatusCompleted {
+			done++
+			continue
+		}
+		open++
+	}
+	return open, done
 }
 
 func (m Model) selectedID() string {
@@ -1145,26 +1356,11 @@ func (m Model) currentConflict() *domain.Conflict {
 	return &m.conflicts[m.selected]
 }
 
-func statusOrNote(entity domain.Entity) string {
-	if entity.IsTask() {
-		return string(entity.Status)
-	}
-	return "note"
-}
-
 func runeStateOrLegacy(entity domain.Entity) string {
 	if entity.State != "" {
 		return string(entity.State)
 	}
 	return string(domain.RuneStateFromStatus(entity.Status, entity.Kind))
-}
-
-func runeFacetNames(facets []domain.RuneFacet) []string {
-	names := make([]string, len(facets))
-	for index, facet := range facets {
-		names[index] = string(facet)
-	}
-	return names
 }
 
 func runePropertyLines(entity domain.Entity) []string {
@@ -1251,9 +1447,13 @@ func splitColumns(width int) (columnLayout, columnLayout) {
 	if width < 64 {
 		return columnLayout{width: width, content: width}, columnLayout{width: 0, content: 0}
 	}
-	left := max(28, width/2)
+	left := max(32, width*38/100)
 	right := max(1, width-left-1)
-	return columnLayout{width: left, content: max(1, left)}, columnLayout{width: right, content: right}
+	return columnLayout{width: left, content: max(1, left-2)}, columnLayout{width: right, content: max(1, right-2)}
+}
+
+func compactListHeight(height int) int {
+	return max(1, min(4, height/3))
 }
 
 func joinColumns(left []string, right []string, leftWidth int) string {
@@ -1276,10 +1476,12 @@ func joinColumns(left []string, right []string, leftWidth int) string {
 	return strings.Join(lines, "\n")
 }
 
-func stackSections(first, second []string, width, height int) string {
+func stackPanels(first, second []string, width, height int) string {
 	lines := make([]string, 0, len(first)+len(second)+1)
 	lines = append(lines, first...)
-	lines = append(lines, "")
+	if len(first) > 0 && len(second) > 0 {
+		lines = append(lines, theme.SurfaceStyle.Render(" "))
+	}
 	lines = append(lines, second...)
 	return strings.Join(fitLines(lines, width, height), "\n")
 }

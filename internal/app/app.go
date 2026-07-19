@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	termansi "github.com/charmbracelet/x/ansi"
+	"github.com/heidaraliy/rune/internal/app/theme"
 	"github.com/heidaraliy/rune/internal/core"
 	"github.com/heidaraliy/rune/internal/handoff"
 )
@@ -869,57 +870,44 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-const (
-	electricBlue  lipgloss.Color = "39"
-	cosmicBase    lipgloss.Color = "#090812"
-	cosmicSurface lipgloss.Color = "#151122"
-	cosmicMuted   lipgloss.Color = "#52436f"
-	cosmicText    lipgloss.Color = "#e8e3f4"
-	cosmicBright  lipgloss.Color = "#f5f0ff"
-	cosmicViolet  lipgloss.Color = "#c8a7ff"
-	cosmicBlue    lipgloss.Color = "#9bbcff"
-	cosmicCyan    lipgloss.Color = electricBlue
-	cosmicAmber   lipgloss.Color = "#f4d889"
-	cosmicGreen   lipgloss.Color = "#8fe6a7"
-)
-
 var (
-	topStyle        = lipgloss.NewStyle().Foreground(cosmicText).Background(cosmicBase)
-	logoStyle       = lipgloss.NewStyle().Bold(true).Foreground(cosmicViolet).Background(cosmicBase)
-	topLabelStyle   = lipgloss.NewStyle().Bold(true).Foreground(cosmicBlue).Background(cosmicBase)
-	projectStyle    = lipgloss.NewStyle().Bold(true).Foreground(cosmicViolet).Background(cosmicBase)
-	todoStyle       = lipgloss.NewStyle().Bold(true).Foreground(cosmicAmber).Background(cosmicBase)
-	doneCountStyle  = lipgloss.NewStyle().Bold(true).Foreground(cosmicGreen).Background(cosmicBase)
-	topMetaStyle    = lipgloss.NewStyle().Foreground(cosmicMuted).Background(cosmicBase)
-	selectedStyle   = lipgloss.NewStyle().Foreground(cosmicBase).Background(cosmicViolet).Bold(true)
-	dimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	tagStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
-	doneStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
-	openStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	headingStyle    = lipgloss.NewStyle().Bold(true).Foreground(electricBlue)
-	labelStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	codeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("221")).Background(lipgloss.Color("236"))
-	footerBarStyle  = lipgloss.NewStyle().Foreground(cosmicText).Background(cosmicSurface)
-	footerKeyStyle  = lipgloss.NewStyle().Bold(true).Foreground(cosmicCyan).Background(cosmicSurface)
-	footerTextStyle = lipgloss.NewStyle().Foreground(cosmicBright).Background(cosmicSurface)
-	footerSepStyle  = lipgloss.NewStyle().Foreground(cosmicMuted).Background(cosmicSurface)
-	statusStyle     = lipgloss.NewStyle().Bold(true).Foreground(cosmicBase).Background(cosmicViolet)
-	sectionBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cosmicViolet)
-	topBoxStyle     = sectionBoxStyle.Background(cosmicBase)
-	footerBoxStyle  = sectionBoxStyle.Background(cosmicSurface)
+	electricBlue    = theme.ElectricBlue
+	cosmicBase      = theme.CosmicBase
+	cosmicSurface   = theme.CosmicSurface
+	cosmicMuted     = theme.CosmicMuted
+	cosmicText      = theme.CosmicText
+	cosmicBright    = theme.CosmicBright
+	cosmicViolet    = theme.CosmicViolet
+	cosmicBlue      = theme.CosmicBlue
+	cosmicCyan      = theme.CosmicCyan
+	cosmicAmber     = theme.CosmicAmber
+	cosmicGreen     = theme.CosmicGreen
+	topStyle        = theme.TopStyle
+	logoStyle       = theme.LogoStyle
+	topLabelStyle   = theme.TopLabelStyle
+	projectStyle    = theme.ProjectStyle
+	todoStyle       = theme.TodoStyle
+	doneCountStyle  = theme.DoneCountStyle
+	topMetaStyle    = theme.TopMetaStyle
+	selectedStyle   = theme.SelectedStyle
+	dimStyle        = theme.DimStyle
+	tagStyle        = theme.TagStyle
+	doneStyle       = theme.DoneStyle
+	openStyle       = theme.OpenStyle
+	headingStyle    = theme.HeadingStyle
+	labelStyle      = theme.LabelStyle
+	codeStyle       = theme.CodeStyle
+	footerBarStyle  = theme.FooterBarStyle
+	footerKeyStyle  = theme.FooterKeyStyle
+	footerTextStyle = theme.FooterTextStyle
+	footerSepStyle  = theme.FooterSepStyle
+	statusStyle     = theme.StatusStyle
+	sectionBoxStyle = theme.SectionBoxStyle
+	topBoxStyle     = theme.TopBoxStyle
+	footerBoxStyle  = theme.FooterBoxStyle
 )
 
-var depthColors = []lipgloss.Color{
-	lipgloss.Color("252"),
-	lipgloss.Color("111"),
-	lipgloss.Color("151"),
-	lipgloss.Color("222"),
-	lipgloss.Color("218"),
-	lipgloss.Color("183"),
-	electricBlue,
-	lipgloss.Color("214"),
-	lipgloss.Color("245"),
-}
+var depthColors = theme.DepthColors
 
 func (m Model) renderTop() string {
 	if m.topHidden {
