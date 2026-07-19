@@ -2,7 +2,8 @@
   const state = {
     token: localStorage.getItem("rune.web.token") || "",
     kind: "",
-    state: "",
+    facet: "",
+    state: "draft",
     query: "",
     runes: [],
     selectedId: "",
@@ -64,26 +65,34 @@
     return node;
   }
 
+  function visibleRunes() {
+    if (!state.facet) return state.runes;
+    return state.runes.filter((rune) => (rune.facets || []).includes(state.facet));
+  }
+
   function renderList() {
     const list = $("rune-list");
+    const runes = visibleRunes();
     list.replaceChildren();
-    $("rune-count").textContent = String(state.runes.length);
-    if (!state.runes.length) {
+    $("rune-count").textContent = String(runes.length);
+    if (!runes.length) {
       const empty = make("div", "empty-list");
-      empty.append(make("strong", "", "Nothing here yet."));
-      empty.append(make("p", "", "Capture a note or task above, then let it evolve."));
+      empty.append(make("strong", "", state.facet ? `No ${state.facet}s yet.` : "Nothing here yet."));
+      empty.append(make("p", "", state.facet ? "Add this facet to a Rune to see it in this view." : "Capture a note or task above, then let it evolve."));
       list.append(empty);
       return;
     }
-    for (const rune of state.runes) {
+    for (const rune of runes) {
       const item = make("button", "rune-item");
       item.type = "button";
       item.classList.toggle("selected", rune.id === state.selectedId);
       item.classList.toggle("deleted", Boolean(rune.deleted_at));
       item.addEventListener("click", () => selectRune(rune.id));
       const top = make("div", "rune-item-top");
-      top.append(make("span", "rune-item-title", rune.title));
-      top.append(make("span", "rune-id", displayID(rune.id)));
+      const main = make("div", "rune-item-main");
+      main.append(make("span", "rune-item-icon", rune.kind === "task" ? "✓" : "▤"));
+      main.append(make("span", "rune-item-title", rune.title));
+      top.append(main, make("span", "rune-id", displayID(rune.id)), make("span", "rune-item-more", "⋮"));
       const snippet = make("div", "rune-item-snippet", rune.body || "No body yet — open this Rune to add the useful version.");
       const bottom = make("div", "rune-item-bottom");
       const kind = make("span", "kind-mark", rune.kind);
@@ -169,22 +178,24 @@
       if (state.kind) query.set("kind", state.kind);
       if (state.state) query.set("state", state.state);
       if (state.query) query.set("query", state.query);
-      const [runes, status, runs] = await Promise.all([
+      const [runeResponse, status, runs] = await Promise.all([
         api(`/v1/runes?${query}`),
         api("/v1/status"),
         api("/v1/runs"),
       ]);
-      state.runes = runes.runes || [];
+      state.runes = runeResponse.runes || [];
       state.sync = status.sync;
       state.conflicts = status.conflicts || [];
       state.runs = runs.runs || [];
       $("workspace-name").textContent = status.workspace_id || "local";
       setConnection(true);
       $("auth-hint").textContent = "Connected. The token stays in this browser only.";
-      if (state.selectedId && state.runes.some((rune) => rune.id === state.selectedId)) {
+      const runes = visibleRunes();
+      if (state.selectedId && runes.some((rune) => rune.id === state.selectedId)) {
         await loadDetail(state.selectedId, false);
-      } else if (state.runes.length) {
-        await loadDetail(state.runes[0].id, false);
+      } else if (runes.length) {
+        state.selectedId = runes[0].id;
+        await loadDetail(runes[0].id, false);
       } else {
         state.selectedId = "";
         state.detail = null;
@@ -234,9 +245,10 @@
     finally { $("sync-now").disabled = false; }
   });
 
-  document.querySelectorAll("[data-kind]").forEach((button) => button.addEventListener("click", () => {
-    state.kind = button.dataset.kind;
-    document.querySelectorAll("[data-kind]").forEach((other) => other.classList.toggle("active", other === button));
+  document.querySelectorAll("[data-kind], [data-facet]").forEach((button) => button.addEventListener("click", () => {
+    state.kind = button.dataset.kind || "";
+    state.facet = button.dataset.facet || "";
+    document.querySelectorAll("[data-kind], [data-facet]").forEach((other) => other.classList.toggle("active", other === button));
     refresh();
   }));
   $("state-filter").addEventListener("change", (event) => { state.state = event.target.value; refresh(); });
@@ -250,6 +262,11 @@
     if (event.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
       event.preventDefault(); $("search").focus();
     }
+  });
+
+  $("new-rune").addEventListener("click", () => {
+    $("capture-title").focus();
+    $("capture-title").scrollIntoView({ behavior: "smooth", block: "center" });
   });
 
   $("capture-form").addEventListener("submit", async (event) => {

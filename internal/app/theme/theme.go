@@ -6,16 +6,16 @@ package theme
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	ElectricBlue  lipgloss.Color = "#5b58e6"
-	CosmicBase    lipgloss.Color = "#191821"
-	CosmicSurface lipgloss.Color = "#211f2c"
-	CosmicMuted   lipgloss.Color = "#77748f"
-	CosmicText    lipgloss.Color = "#c8c8ff"
-	CosmicBright  lipgloss.Color = "#f0efff"
-	CosmicViolet  lipgloss.Color = "#b8b7ff"
-	CosmicBlue    lipgloss.Color = "#7976ff"
+	ElectricBlue  lipgloss.Color = "#5c54e8"
+	CosmicBase    lipgloss.Color = "#101322"
+	CosmicSurface lipgloss.Color = "#15182a"
+	CosmicMuted   lipgloss.Color = "#6f728f"
+	CosmicText    lipgloss.Color = "#c4c4ff"
+	CosmicBright  lipgloss.Color = "#f4f2ff"
+	CosmicViolet  lipgloss.Color = "#7770ff"
+	CosmicBlue    lipgloss.Color = "#7770ff"
 	CosmicCyan    lipgloss.Color = ElectricBlue
-	CosmicAmber   lipgloss.Color = "#e0c5ff"
+	CosmicAmber   lipgloss.Color = "#c7b9ff"
 	CosmicGreen   lipgloss.Color = "#a9d8c0"
 )
 
@@ -28,13 +28,13 @@ var (
 	DoneCountStyle  = lipgloss.NewStyle().Bold(true).Foreground(CosmicGreen).Background(CosmicBase)
 	TopMetaStyle    = lipgloss.NewStyle().Foreground(CosmicMuted).Background(CosmicBase)
 	SelectedStyle   = lipgloss.NewStyle().Foreground(CosmicBase).Background(CosmicViolet).Bold(true)
-	DimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#67657b"))
-	TagStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#a7a6d8"))
+	DimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#686b89"))
+	TagStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#a4a4dc"))
 	DoneStyle       = lipgloss.NewStyle().Foreground(CosmicGreen)
 	OpenStyle       = lipgloss.NewStyle().Foreground(CosmicBlue)
 	HeadingStyle    = lipgloss.NewStyle().Bold(true).Foreground(ElectricBlue)
 	LabelStyle      = lipgloss.NewStyle().Bold(true).Foreground(CosmicViolet)
-	CodeStyle       = lipgloss.NewStyle().Foreground(CosmicBright).Background(lipgloss.Color("#302e40"))
+	CodeStyle       = lipgloss.NewStyle().Foreground(CosmicBright).Background(lipgloss.Color("#202541"))
 	SurfaceStyle    = lipgloss.NewStyle().Foreground(CosmicText).Background(CosmicSurface)
 	FooterBarStyle  = SurfaceStyle
 	FooterKeyStyle  = lipgloss.NewStyle().Bold(true).Foreground(CosmicCyan).Background(CosmicSurface)
@@ -49,11 +49,11 @@ var (
 
 var DepthColors = []lipgloss.Color{
 	lipgloss.Color("#c8c8ff"),
-	lipgloss.Color("#a7a6d8"),
-	lipgloss.Color("#7976ff"),
-	lipgloss.Color("#b8b7ff"),
-	lipgloss.Color("#e0c5ff"),
-	lipgloss.Color("#9f9dd0"),
+	lipgloss.Color("#a4a4dc"),
+	lipgloss.Color("#7770ff"),
+	lipgloss.Color("#aba9ff"),
+	lipgloss.Color("#c7b9ff"),
+	lipgloss.Color("#9b9bc9"),
 	ElectricBlue,
 	lipgloss.Color("#a9d8c0"),
 	lipgloss.Color("#77748f"),

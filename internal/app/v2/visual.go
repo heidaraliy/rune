@@ -14,7 +14,7 @@ var (
 	v2BodyStyle        = lipgloss.NewStyle().Foreground(theme.CosmicText)
 	v2MetaStyle        = lipgloss.NewStyle().Foreground(theme.CosmicMuted)
 	v2PanelStyle       = theme.PanelBoxStyle
-	v2SelectedRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2b2940"))
+	v2SelectedRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("#202541"))
 	v2MarkerStyle      = lipgloss.NewStyle().Bold(true).Foreground(theme.CosmicViolet)
 	v2DangerStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ee9ea5"))
 )

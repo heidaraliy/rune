@@ -3,8 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#111518" />
+    <meta name="theme-color" content="#111426" />
     <title>Rune — workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Philosopher:wght@400;700&display=swap" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -42,10 +45,8 @@
           <div class="capture-shell">
             <div class="section-heading">
               <div>
-                <div class="eyebrow">Workspace inbox</div>
                 <h1>What should Rune remember?</h1>
               </div>
-              <span id="rune-count" class="count-badge">0</span>
             </div>
 
             <form id="capture-form" class="capture-card">
@@ -65,33 +66,39 @@
             </form>
           </div>
 
-          <div class="filter-bar">
-            <div class="segmented" role="tablist" aria-label="Rune kind filter">
-              <button class="segment active" data-kind="" type="button">All</button>
-              <button class="segment" data-kind="task" type="button">Tasks</button>
-              <button class="segment" data-kind="note" type="button">Notes</button>
+          <div class="collection-card">
+            <div class="collection-heading">
+              <div class="collection-title">
+                <h2>Your Runes</h2>
+                <span id="rune-count" class="count-badge">0</span>
+              </div>
             </div>
-            <select id="state-filter" aria-label="Filter by state">
-              <option value="">Any state</option>
-              <option value="draft">Draft</option>
-              <option value="ready">Ready</option>
-              <option value="in_progress">In progress</option>
-              <option value="complete">Complete</option>
-              <option value="blocked">Blocked</option>
-              <option value="review">Review</option>
-            </select>
+            <div class="filter-bar">
+              <div class="segmented" role="tablist" aria-label="Rune kind and facet filter">
+                <button class="segment active" data-kind="" type="button">All</button>
+                <button class="segment" data-kind="task" type="button">Tasks</button>
+                <button class="segment" data-kind="note" type="button">Notes</button>
+                <button class="segment" data-facet="idea" type="button">Ideas</button>
+                <button class="segment" data-facet="reference" type="button">References</button>
+              </div>
+              <select id="state-filter" aria-label="Filter by state">
+                <option value="draft">Drafts</option>
+                <option value="">Any state</option>
+                <option value="ready">Ready</option>
+                <option value="in_progress">In progress</option>
+                <option value="complete">Complete</option>
+                <option value="blocked">Blocked</option>
+                <option value="review">Review</option>
+              </select>
+            </div>
+            <label class="search-box">
+              <span>⌕</span>
+              <input id="search" type="search" placeholder="Search titles and bodies..." />
+              <kbd>/</kbd>
+            </label>
+            <div id="rune-list" class="rune-list" aria-live="polite"></div>
+            <button id="new-rune" class="new-rune" type="button"><span>＋</span> New rune</button>
           </div>
-          <label class="search-box">
-            <span>⌕</span>
-            <input id="search" type="search" placeholder="Search titles and bodies" />
-            <kbd>/</kbd>
-          </label>
-
-          <div class="collection-heading">
-            <div class="eyebrow">Workspace collection</div>
-            <h2>Your Runes</h2>
-          </div>
-          <div id="rune-list" class="rune-list" aria-live="polite"></div>
         </section>
 
         <section class="detail-column" aria-label="Rune detail">

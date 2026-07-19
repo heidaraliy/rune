@@ -70,15 +70,18 @@ func responseJSON(t *testing.T, recorder *httptest.ResponseRecorder, target any)
 func TestServerServesUIHealthAndProtectsAPI(t *testing.T) {
 	server, _ := testServer(t, nil)
 	ui := doRequest(t, server, http.MethodGet, "/", nil, false)
-	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune remember?") || !strings.Contains(ui.Body.String(), "Your Runes") || !strings.Contains(ui.Body.String(), "brand-ascii") {
+	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune remember?") || !strings.Contains(ui.Body.String(), "Your Runes") || !strings.Contains(ui.Body.String(), "Ideas") || !strings.Contains(ui.Body.String(), "References") || !strings.Contains(ui.Body.String(), "new-rune") || !strings.Contains(ui.Body.String(), "brand-ascii") || !strings.Contains(ui.Body.String(), "fonts.googleapis.com") {
 		t.Fatalf("UI response code=%d body=%q", ui.Code, ui.Body.String())
 	}
 	if ui.Header().Get("X-Content-Type-Options") != "nosniff" || ui.Header().Get("X-Frame-Options") != "DENY" || ui.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("UI security headers=%v", ui.Header())
 	}
 	styles := doRequest(t, server, http.MethodGet, "/static/styles.css", nil, false)
-	if styles.Code != http.StatusOK || !strings.Contains(styles.Body.String(), "--paper:") || !strings.Contains(styles.Body.String(), "--indigo:") || !strings.Contains(styles.Body.String(), "radial-gradient") {
+	if styles.Code != http.StatusOK || !strings.Contains(styles.Body.String(), "--canvas:") || !strings.Contains(styles.Body.String(), "--indigo:") || !strings.Contains(styles.Body.String(), "Philosopher") || !strings.Contains(styles.Body.String(), ".collection-card") {
 		t.Fatalf("visual stylesheet code=%d body=%q", styles.Code, styles.Body.String())
+	}
+	if csp := ui.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "fonts.googleapis.com") || !strings.Contains(csp, "fonts.gstatic.com") {
+		t.Fatalf("font CSP=%q", csp)
 	}
 	health := doRequest(t, server, http.MethodGet, "/healthz", nil, false)
 	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), protocol) {
