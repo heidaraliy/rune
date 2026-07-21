@@ -2,14 +2,29 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	v2app "github.com/heidaraliy/rune/internal/app/v2"
 	"github.com/heidaraliy/rune/internal/handoff"
+	v2artifacts "github.com/heidaraliy/rune/internal/storage/artifacts"
+	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
 )
+
+type captureProgram struct {
+	model tea.Model
+}
+
+func (p captureProgram) Run() (tea.Model, error) {
+	return p.model, nil
+}
 
 func gitProjectDir(t *testing.T, name string) string {
 	t.Helper()
@@ -64,6 +79,527 @@ func TestRunAddListEditShowWithInterspersedFlags(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "hello\n\tworld with `code`") {
 		t.Fatalf("show stdout = %q", stdout.String())
+	}
+}
+
+func TestRunV2LocalStructuredCaptureLinkAndSearch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"v2", "capture", "build foundation", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("capture code = %d, stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "capture", "architecture note", "--note", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader("details"), cwd)
+	if code != 0 {
+		t.Fatalf("note capture code = %d, stderr=%q", code, stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "capture", "living idea", "--kind", "idea", "--parent", taskID, "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("idea capture code = %d, stderr=%q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "status", taskID, "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "Status "+taskID) {
+		t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "link", taskID, noteID, "--kind", "references", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "references") {
+		t.Fatalf("link code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "search", "foundation", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "build foundation") {
+		t.Fatalf("search code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "list", "--kind", "idea", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "living idea") {
+		t.Fatalf("idea list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Kind: task", "Status: ready", "Links:", "references"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("show missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunV2HierarchyAndStableRuneReferences(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "parent idea", "--note", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("parent capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	parentID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "first child", "--parent", "rune://" + parentID, "--order", "1", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("first child capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	firstID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "second child", "--parent", parentID, "--order", "2", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("second child capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	secondID := strings.Fields(stdout.String())[1]
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--parent", "rune://" + parentID, "--sort", "sibling_order", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("hierarchy list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if first, second := strings.Index(stdout.String(), "first child"), strings.Index(stdout.String(), "second child"); first < 0 || second < 0 || first > second {
+		t.Fatalf("hierarchy list order = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", "rune://" + firstID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("stable ref show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Ref: rune://"+firstID) {
+		t.Fatalf("stable ref show = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--parent", parentID, "--sort", "sibling_order", "--json", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("JSON hierarchy list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"ref": "rune://`, `"facets": [`, `"parent_id": "`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("JSON hierarchy list missing %s: %q", want, stdout.String())
+		}
+	}
+	if !strings.Contains(stdout.String(), secondID) {
+		t.Fatalf("JSON hierarchy list missing second child %q", stdout.String())
+	}
+}
+
+func TestRunV2LifecycleStateWorksForNotesAndTasks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "stateful note", "--note", "--state", "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("note capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", "rune://" + noteID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "State: ready") || !strings.Contains(stdout.String(), "Facets: document") {
+		t.Fatalf("note show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "edit", noteID, "--state", "in-progress", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("note state edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--state", "in_progress", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "stateful note") || !strings.Contains(stdout.String(), "in_progress") {
+		t.Fatalf("state list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "capture", "stateful task", "--state", "ready", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("task capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "State: ready") || !strings.Contains(stdout.String(), "Facets: document, task") {
+		t.Fatalf("task show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2CustomFacetsAndProperties(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{
+		"v2", "capture", "proposal note", "--note", "--facets", "proposal,research",
+		"--property", "audience=team", "--facet-property", "proposal.decision=pending", "--db", db,
+	}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom capture code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", noteID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Facets: document, proposal, research", "Property: audience=team", "Facet property: proposal.decision=pending"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("custom show missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{
+		"v2", "edit", noteID, "--property", "owner=codex", "--remove-property", "audience",
+		"--facet-property", "proposal.decision=accepted", "--db", db,
+	}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--json", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("custom JSON list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{`"facets": [`, `"properties": {`, `"owner": "codex"`, `"facet_properties": {`, `"proposal": {`, `"decision": "accepted"`} {
+		if !strings.Contains(stdout.String(), want) || strings.Contains(stdout.String(), "audience") {
+			t.Fatalf("custom JSON list missing %q or retained removed property: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunV2SyncReportsEditsAndReversibleTombstones(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "editable task", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "edit", taskID, "--title", "changed", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Updated "+taskID) {
+		t.Fatalf("edit code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "edit", taskID, "--body=", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Updated "+taskID) {
+		t.Fatalf("clear body code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "delete", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code == 0 || !strings.Contains(stderr.String(), "requires --confirm") {
+		t.Fatalf("delete code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "delete", taskID, "--confirm", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Tombstoned "+taskID) {
+		t.Fatalf("confirmed delete code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--deleted", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "deleted") || !strings.Contains(stdout.String(), "changed") {
+		t.Fatalf("deleted list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "restore", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Restored "+taskID) {
+		t.Fatalf("restore code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Workspace: local", "Remote: not-configured", "Local cursor: 5", "Pending changes: 5", "Open conflicts: 0"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("sync output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunV2FileSyncRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	remote := filepath.Join(home, "remote")
+	dbA := filepath.Join(home, "a.db")
+	dbB := filepath.Join(home, "b.db")
+	artifactsA := filepath.Join(home, "a-artifacts")
+	artifactsB := filepath.Join(home, "b-artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"v2", "capture", "shared from A", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsA, "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("A sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Protocol: sync.v1", "Remote: configured", "Pushed changes: 1", "Pulled changes: 1", "Pending changes: 0"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("A sync missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsB, "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("B sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Pulled changes: 1") {
+		t.Fatalf("B sync output = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", remote, "--artifact-root", artifactsA, "--db", dbA, "--json"}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("JSON sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil || payload.Protocol != "sync.v1" {
+		t.Fatalf("JSON sync payload=%q, err=%v", stdout.String(), err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "shared from A") {
+		t.Fatalf("B list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2HTTPSyncRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	root := t.TempDir()
+	serverStore, err := v2sqlite.Open(filepath.Join(root, "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	serverArtifacts, err := v2artifacts.Open(filepath.Join(root, "server-artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncServer, err := runesync.NewServer(serverStore, serverArtifacts, "local", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(syncServer)
+	defer httpServer.Close()
+
+	dbA := filepath.Join(root, "a.db")
+	dbB := filepath.Join(root, "b.db")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "capture", "shared over HTTP", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "sync", "--remote", httpServer.URL, "--token", "secret", "--db", dbA}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("HTTP A sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Protocol: sync.v1", "Pushed changes: 1", "Pulled changes: 1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("HTTP A sync missing %q:\n%s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	t.Setenv("RUNE_SYNC_REMOTE", httpServer.URL)
+	t.Setenv("RUNE_SYNC_TOKEN", "secret")
+	if code := run([]string{"v2", "sync", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Pulled changes: 1") {
+		t.Fatalf("HTTP B sync code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "list", "--db", dbB}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "shared over HTTP") {
+		t.Fatalf("HTTP B list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2SyncServeRequiresToken(t *testing.T) {
+	t.Setenv("RUNE_HOME", t.TempDir())
+	t.Setenv("RUNE_SYNC_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "sync", "serve", "--listen", "127.0.0.1:0"}, &stdout, &stderr, strings.NewReader(""), t.TempDir()); code != 1 || !strings.Contains(stderr.String(), "requires --token") {
+		t.Fatalf("serve without token code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2QueueRunAndInspectArtifacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	artifactRoot := filepath.Join(home, "artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"v2", "capture", "execute from terminal", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "queue", taskID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("queue code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	queueLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	runID := strings.Fields(queueLines[0])[2]
+	contextID := strings.Fields(queueLines[1])[2]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "run", runID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "completed") {
+		t.Fatalf("run code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "artifacts", runID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "context.json") || !strings.Contains(stdout.String(), "result.md") {
+		t.Fatalf("artifacts code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "artifact", contextID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "rune.context.v1") {
+		t.Fatalf("artifact code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "Status: completed") {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2CancelMarksQueuedRunAndTask(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	artifactRoot := filepath.Join(home, "artifacts")
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"v2", "capture", "cancel me", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("capture code=%d stderr=%q", code, stderr.String())
+	}
+	taskID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "queue", taskID, "--db", db, "--artifact-root", artifactRoot}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 {
+		t.Fatalf("queue code=%d stderr=%q", code, stderr.String())
+	}
+	runID := strings.Fields(stdout.String())[2]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "cancel", runID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "canceled") {
+		t.Fatalf("cancel code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"v2", "show", taskID, "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd); code != 0 || !strings.Contains(stdout.String(), "Status: canceled") {
+		t.Fatalf("show code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2TUILaunchesStructuredClient(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	cwd := t.TempDir()
+	oldProgram := newProgram
+	defer func() { newProgram = oldProgram }()
+	var captured tea.Model
+	newProgram = func(model tea.Model) programRunner {
+		captured = model
+		return captureProgram{model: model}
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "tui", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("tui code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, ok := captured.(v2app.Model); !ok {
+		t.Fatalf("captured model = %T, want v2 app model", captured)
+	}
+}
+
+func TestRunV2TUIAutoSyncRequiresRemote(t *testing.T) {
+	t.Setenv("RUNE_SYNC_REMOTE", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "tui", "--auto-sync", "--db", filepath.Join(t.TempDir(), "rune-v2.db")}, &stdout, &stderr, strings.NewReader(""), t.TempDir())
+	if code != 1 || !strings.Contains(stderr.String(), "--auto-sync requires --remote") {
+		t.Fatalf("auto-sync without remote code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2WebRequiresToken(t *testing.T) {
+	t.Setenv("RUNE_WEB_TOKEN", "")
+	t.Setenv("RUNE_SYNC_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"v2", "web", "--db", filepath.Join(t.TempDir(), "rune-v2.db")}, &stdout, &stderr, strings.NewReader(""), t.TempDir())
+	if code != 1 || !strings.Contains(stderr.String(), "v2 web requires --token") {
+		t.Fatalf("web without token code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunV2ImportIsSourcePreservingAndIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RUNE_HOME", home)
+	db := filepath.Join(home, "rune-v2.db")
+	source := filepath.Join(t.TempDir(), "ideas.md")
+	original := "# ideas\n\n- [ ] imported task\n<!-- rune:id=import01 type=task created=2026-07-01T00:00:00Z -->\n"
+	if err := os.WriteFile(source, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	for attempt := 0; attempt < 2; attempt++ {
+		stdout.Reset()
+		stderr.Reset()
+		code := run([]string{"v2", "import", source, "--project", "ideas", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+		if code != 0 {
+			t.Fatalf("import attempt %d code=%d stderr=%q", attempt, code, stderr.String())
+		}
+		if attempt == 0 && !strings.Contains(stdout.String(), "Imported 1 item(s), skipped 0") {
+			t.Fatalf("first import output=%q", stdout.String())
+		}
+		if attempt == 1 && !strings.Contains(stdout.String(), "Imported 0 item(s), skipped 1") {
+			t.Fatalf("second import output=%q", stdout.String())
+		}
+	}
+	if after, err := os.ReadFile(source); err != nil || string(after) != original {
+		t.Fatalf("source changed err=%v:\n%s", err, string(after))
 	}
 }
 

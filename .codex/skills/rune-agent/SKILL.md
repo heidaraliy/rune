@@ -1,21 +1,28 @@
 ---
 name: rune-agent
-description: Full feature-to-PR workflow for Rune. Use when a feature or fix should move from request to context bundle, audited plan, implementation, validation, review, and draft PR packaging when Git is available.
+description: Full Rune feature-to-PR workflow for legacy maintenance and canonical Rune workspace work. Use for cross-module changes involving Runes, facets, graph links, structured storage, sync, agent runs, artifacts, TUI/CLI clients, or PR delivery.
 ---
 
 # Rune Agent Pipeline
 
-Use this skill for full implementation work or when the user asks for orchestration around Rune.
+Use this skill for full implementation work or when the user asks for
+orchestration around Rune. Read `docs/rune-v2-architecture.md` for any task
+that crosses the legacy Markdown tracker boundary or touches the shared `sync`
+boundary.
 
 ## Pipeline Contract
 
+0. Classify the request as legacy maintenance, canonical Rune work, or a
+   migration/compatibility boundary.
 1. Preflight Git availability, branch, and worktree state.
-2. Build a context bundle from local repo search.
+2. Build a path-grounded context bundle from local repo search.
 3. Produce an architecture plan for non-trivial or cross-module work.
 4. Audit the plan before broad edits.
-5. Implement locally or from a feature worktree, depending on Git availability and user direction.
-6. Run targeted validation, then `go test ./...` when code changed.
-7. Review the diff for correctness, storage safety, and test gaps.
+5. Implement in dependency order: Rune/product contract, domain/storage
+   adapter, shared application/client contract, then CLI/TUI/API/worker
+   surfaces.
+6. Run targeted validation, then `go test ./...` when Go code changed.
+7. Review the diff for correctness, data safety, sync/run/artifact invariants, and test gaps.
 8. Commit, push, and open a draft PR only when Git and remote context are available or explicitly requested.
 
 Never invent branch, commit, push, or PR status when this directory has no `.git`.
@@ -29,10 +36,44 @@ Never invent branch, commit, push, or PR status when this directory has no `.git
 
 ## Context Bundle
 
-Use `rg` before designing. Include owning packages, nearby tests, CLI/TUI behavior, note-store safety risks, and validation gates.
+Use `rg` before designing. Include:
+
+- the relevant Rune contract section and current/legacy owner paths
+- owning packages and nearby tests
+- CLI/TUI/API/worker behavior and compatibility contracts
+- storage, migration, ID, revision, and project-scope risks
+- graph/link, agent-run, artifact, permission, and sync implications
+- validation gates and any manual temp-store smoke
 
 When subagents are available and the user explicitly asked for them, use independent explorers for code context, risk review, and test discovery.
 
+## Canonical Rune Boundaries
+
+- `rune` is the canonical main app; CLI, TUI, desktop, and mobile are views over one workspace contract.
+- A Rune is the durable addressable object. Notes, proposals, braindumps, and task capabilities are facets or presentations over that identity.
+- Structured storage is canonical for identity, hierarchy, state, relationships, and revisions. Markdown is a first-class content/editing surface and a legacy adapter, not a second domain database.
+- Parent/child relationships, sibling order, filters, sorting, search, and stable `rune://` references belong to the shared application contract.
+- A graph is a projection over explicit typed links, not a reason to introduce a graph database prematurely.
+- Agent runs must have explicit lifecycle, permissions, context snapshots, artifact references, and observable Rune state transitions.
+- `sync` is the shared API/protocol boundary for state, revisions, identity, and replication. It may later be hosted, but it is not a required daemon process or product called `syncd`.
+- Sync must be revision-aware and conflict-visible; never silently overwrite user data.
+- Keep provider-specific execution behind adapters so Codex, Claude, local shell, and remote workers share the same run model.
+- Preserve legacy CLI, Markdown, IDs, and temp `RUNE_HOME` behavior until a migration/cutover plan explicitly changes them.
+
+## Stop And Replan
+
+Stop before editing when:
+
+- a proposed v2 change would write structured state only into legacy Markdown comments
+- a proposed client adds a surface-specific Rune, query, or lifecycle model instead of using the shared application contract
+- the canonical source of truth, conflict policy, or agent permission boundary is unspecified
+- an artifact may contain secrets and the retention/redaction behavior is unspecified
+- the work expands from a vertical slice into cloud, mobile, graph, and provider integrations at once
+
 ## Review And Delivery
 
-Run `rune-code-reviewer` logic on the final diff. Fix correctness, note-store safety, and test gaps before packaging. Draft PR descriptions must cover summary, validation, note-store safety, and residual risk.
+Run `rune-code-reviewer` logic on the final diff. Fix correctness, canonical
+Rune/client-contract drift, legacy note-store safety, structured-storage and
+migration safety, graph/run/artifact invariants, and test gaps before packaging.
+Draft PR descriptions must cover summary, validation, migration/note-store
+safety, permissions, sync boundary claims, and residual risk.

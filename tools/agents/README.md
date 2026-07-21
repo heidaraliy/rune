@@ -1,6 +1,9 @@
 # Rune Agent Configuration
 
-Rune keeps root instructions sparse. Detailed agent behavior lives in this tree and in repo-local skills under `.codex/skills`.
+Rune keeps root instructions sparse. Detailed agent behavior lives in this tree
+and in repo-local skills under `.codex/skills`. Rune architecture vocabulary,
+the `rune`/`sync` boundary, and slice boundaries live in
+`docs/rune-v2-architecture.md`.
 
 ## Layout
 
@@ -12,6 +15,7 @@ Rune keeps root instructions sparse. Detailed agent behavior lives in this tree 
 - `scripts/`: fast local validators and worktree helpers.
 - `git-hooks/`: opt-in hooks for local Git users.
 - `codex-hooks/`: example hooks for environments that support Codex hook runners.
+- `docs/rune-v2-architecture.md`: canonical Rune, shared `sync`, structured workspace, graph, run, and artifact contract.
 
 ## Common Commands
 
@@ -34,3 +38,4 @@ chmod +x .git/hooks/pre-commit .git/hooks/pre-push
 ```
 
 The hooks block default-branch commits and run the agent config validator.
+They do not replace Rune migration, storage, sync, or run-safety checks.

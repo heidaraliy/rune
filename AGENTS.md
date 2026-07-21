@@ -8,7 +8,15 @@ description: Rune agent entrypoint. Keep this file sparse; detailed workflows li
 
 ## Goal
 
-Build Rune as a fast, terminal-native project memory tool. Good work preserves quick capture, plain Markdown storage, short ID workflows, project detection, and safe note-file handling.
+Build `rune` as the canonical terminal-first, local-first workspace for
+braindumps, proposals, tasks, links, agent runs, and artifacts. The long-term
+product is one shared workspace across the terminal, desktop, mobile, and
+cloud while remaining useful offline.
+
+The current implementation is a legacy Markdown task tracker. Protect it during
+the transition, but do not mistake its line-oriented storage model for the
+structured Rune model. `sync` is the shared API/protocol boundary for workspace
+state and replication; it is not a required daemon or separate product name.
 
 ## Load Order
 
@@ -38,10 +46,14 @@ Use the smallest skill set that covers the task.
 - When this directory is a Git checkout, never implement, commit, or push feature work from `main`.
 - If `.git` is absent, make local edits only and report that commit, push, worktree, and PR packaging are unavailable.
 - Never run destructive experiments against the user's real `~/notes`; use temp `RUNE_HOME` for tests and smokes.
-- Preserve plain Markdown as the source of truth, including `<!-- rune:... -->` metadata, nesting depth, and user-authored body text.
+- For legacy paths, preserve plain Markdown, `<!-- rune:... -->` metadata, nesting depth, and user-authored body text.
+- For structured Rune paths, use a structured domain/store as the source of truth for identity, hierarchy, state, revisions, and relationships. Treat Markdown as a first-class content/editing surface plus a legacy adapter; never add new state by sprinkling more comment fields into legacy files.
 - Preserve shortest-unique-prefix ID semantics and clear ambiguity errors.
 - Keep CLI behavior testable through `run(args, stdout, stderr, stdin, cwd)` and keep normal output on stdout, errors on stderr.
 - Keep TUI keyboard workflows visible, responsive, and usable in compact terminals.
+- Keep Runes, links, runs, and artifacts addressable by stable IDs and revision-aware APIs. Notes, proposals, braindumps, and task-capable items are facets or presentations over that shared identity.
+- Keep CLI, TUI, app, and future clients on the same application contract, query semantics, and machine-readable references.
+- Treat agent execution as a permissioned, auditable lifecycle; do not persist secrets or hidden model reasoning as ordinary artifacts.
 - Keep root guidance compact; put detailed agent rules in `tools/agents/**` or skills.
 
 ## Required Validation
@@ -50,6 +62,7 @@ Use the smallest skill set that covers the task.
 - Formatting-sensitive Go changes: `gofmt` or `go fmt ./...`, then verify no unintended churn.
 - CLI or storage changes: add temp-dir tests or run a temp `RUNE_HOME` smoke that does not touch real notes.
 - TUI changes: cover state transitions or render helpers with tests; inspect manually when behavior depends on a live terminal.
+- Structured Rune storage/sync/run changes: cover schema migration, transaction/conflict behavior, fake providers, artifact hashing, and offline/local paths.
 - Local app updates requested for PATH: run `tools/agents/scripts/install_path_binary.sh` and verify the shell-resolved `rune` binary.
 - Agent config/docs changes: `python3 tools/agents/scripts/validate_agent_config.py`, `bash -n tools/agents/git-hooks/* tools/agents/codex-hooks/*`, and `git diff --check` when Git metadata exists.
 

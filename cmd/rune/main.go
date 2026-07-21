@@ -3,21 +3,34 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/heidaraliy/rune/internal/app"
+	v2app "github.com/heidaraliy/rune/internal/app/v2"
+	"github.com/heidaraliy/rune/internal/application"
 	"github.com/heidaraliy/rune/internal/core"
+	"github.com/heidaraliy/rune/internal/domain"
 	"github.com/heidaraliy/rune/internal/handoff"
+	v2artifacts "github.com/heidaraliy/rune/internal/storage/artifacts"
+	"github.com/heidaraliy/rune/internal/storage/markdown"
+	v2sqlite "github.com/heidaraliy/rune/internal/storage/sqlite"
+	runesync "github.com/heidaraliy/rune/internal/sync"
+	runeweb "github.com/heidaraliy/rune/internal/web"
 )
 
 var version = "dev"
@@ -32,7 +45,7 @@ var (
 	tmuxSession     = handoff.IsTmuxSession
 	writeTmuxBuffer = handoff.LoadTmuxBuffer
 	runCodex        = handoff.RunCodex
-	newProgram      = func(model app.Model) programRunner {
+	newProgram      = func(model tea.Model) programRunner {
 		return tea.NewProgram(model, tea.WithAltScreen())
 	}
 )
@@ -70,6 +83,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) i
 		err = runTicket(rest, stdout, cwd)
 	case "codex":
 		err = runCodexTicket(rest, stdout, stderr, stdin, cwd)
+	case "v2":
+		err = runV2(rest, stdout, stderr, stdin, cwd)
 	case "edit":
 		err = runEdit(rest, stdout, stdin, cwd)
 	case "done":
@@ -312,6 +327,1290 @@ func runCodexTicket(args []string, stdout, stderr io.Writer, stdin io.Reader, cw
 		return fmt.Errorf("codex failed: %w", err)
 	}
 	return nil
+}
+
+func runV2(args []string, stdout, stderr io.Writer, stdin io.Reader, cwd string) error {
+	if len(args) == 0 {
+		return errors.New("v2 requires a subcommand: init, capture, list, show, edit, delete, restore, status, search, link, links, queue, run, cancel, runs, artifacts, artifact, sync, web, tui, or import")
+	}
+	switch args[0] {
+	case "init":
+		return runV2Init(args[1:], stdout, cwd)
+	case "capture", "add":
+		return runV2Capture(args[1:], stdout, stdin, cwd)
+	case "list":
+		return runV2List(args[1:], stdout, cwd)
+	case "show":
+		return runV2Show(args[1:], stdout, cwd)
+	case "edit":
+		return runV2Edit(args[1:], stdout, cwd)
+	case "delete":
+		return runV2Delete(args[1:], stdout, cwd)
+	case "restore":
+		return runV2Restore(args[1:], stdout, cwd)
+	case "status":
+		return runV2Status(args[1:], stdout, cwd)
+	case "search", "find":
+		return runV2Search(args[1:], stdout, cwd)
+	case "link":
+		return runV2Link(args[1:], stdout, cwd)
+	case "links":
+		return runV2Links(args[1:], stdout, cwd)
+	case "queue":
+		return runV2Queue(args[1:], stdout, cwd)
+	case "run":
+		return runV2Run(args[1:], stdout, cwd)
+	case "cancel":
+		return runV2Cancel(args[1:], stdout, cwd)
+	case "runs":
+		return runV2Runs(args[1:], stdout, cwd)
+	case "artifacts":
+		return runV2Artifacts(args[1:], stdout, cwd)
+	case "artifact":
+		return runV2Artifact(args[1:], stdout, cwd)
+	case "sync":
+		return runV2Sync(args[1:], stdout, cwd)
+	case "web":
+		return runV2Web(args[1:], stdout, cwd)
+	case "tui":
+		return runV2TUI(args[1:], stdout, stderr, cwd)
+	case "import":
+		return runV2Import(args[1:], stdout, cwd)
+	default:
+		return fmt.Errorf("unknown v2 subcommand %q", args[0])
+	}
+}
+
+func runV2Init(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	_, service, closeStore, path, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	_ = service
+	fmt.Fprintf(stdout, "Initialized Rune 2 workspace %s at %s\n", *workspace, path)
+	return nil
+}
+
+func runV2TUI(args []string, stdout, stderr io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 tui", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "sync HTTP bearer token")
+	autoSync := fs.Bool("auto-sync", false, "sync once when the TUI starts (requires --remote)")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true, "remote": true, "token": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	if *autoSync && strings.TrimSpace(*remote) == "" {
+		return errors.New("v2 tui --auto-sync requires --remote or RUNE_SYNC_REMOTE")
+	}
+	scope, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	var syncTarget runesync.SyncTarget
+	var closeSyncTarget func() error
+	if strings.TrimSpace(*remote) != "" {
+		syncTarget, closeSyncTarget, err = openV2SyncPeer(*remote, *token)
+		if err != nil {
+			return err
+		}
+		defer closeSyncTarget()
+	}
+	model, err := v2app.NewWithOptions(service, *workspace, scope.Project, v2app.Options{
+		SyncTarget: syncTarget,
+		AutoSync:   *autoSync,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := newProgram(model).Run(); err != nil {
+		return err
+	}
+	_ = stdout
+	_ = stderr
+	return nil
+}
+
+func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 capture", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	body := fs.String("body", "", "body text")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	order := fs.Int("order", 0, "sibling order; zero appends")
+	state := fs.String("state", "", "Rune state: draft, ready, in_progress, complete, blocked, review, or failed")
+	facets := fs.String("facets", "", "comma-separated Rune facets")
+	var properties repeatedFlag
+	var facetProperties repeatedFlag
+	fs.Var(&properties, "property", "common Rune property key=value; repeatable")
+	fs.Var(&facetProperties, "facet-property", "facet-scoped property facet.key=value; repeatable")
+	fromStdin := fs.Bool("stdin", false, "read body from stdin")
+	asNote := fs.Bool("note", false, "capture a note instead of a task")
+	kindFlag := fs.String("kind", "", "Rune kind: task, idea, or note")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true, "kind": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return errors.New("v2 capture requires text")
+	}
+	if *fromStdin {
+		text, err := readAll(stdin)
+		if err != nil {
+			return err
+		}
+		*body = text
+	}
+	scope, service, closeStore, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	parentID := ""
+	if strings.TrimSpace(*parent) != "" {
+		parentRune, err := service.Get(context.Background(), *parent)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		parentID = parentRune.ID
+	}
+	kind := domain.KindTask
+	if strings.TrimSpace(*kindFlag) != "" {
+		kind = domain.Kind(strings.ToLower(strings.TrimSpace(*kindFlag)))
+		if kind != domain.KindTask && kind != domain.KindIdea && kind != domain.KindNote {
+			return fmt.Errorf("unknown v2 kind %q; use task, idea, or note", *kindFlag)
+		}
+	}
+	if *asNote {
+		if *kindFlag != "" && kind != domain.KindNote {
+			return errors.New("--note cannot be combined with a non-note --kind")
+		}
+		kind = domain.KindNote
+	}
+	status := domain.StatusDraft
+	if kind != domain.KindTask {
+		status = ""
+	}
+	parsedState, err := domain.NormalizeRuneState(*state)
+	if err != nil {
+		return err
+	}
+	var facetSet []domain.RuneFacet
+	if strings.TrimSpace(*facets) != "" {
+		requestedFacets := make([]domain.RuneFacet, 0, len(splitCSV(*facets)))
+		for _, facet := range splitCSV(*facets) {
+			requestedFacets = append(requestedFacets, domain.RuneFacet(facet))
+		}
+		facetSet, err = domain.NormalizeRuneFacets(requestedFacets, kind)
+		if err != nil {
+			return err
+		}
+	}
+	commonProperties := make(map[string]string)
+	for _, assignment := range properties {
+		key, value, err := parsePropertyAssignment(assignment)
+		if err != nil {
+			return err
+		}
+		commonProperties[key] = value
+	}
+	facetPropertyValues := make(map[domain.RuneFacet]map[string]string)
+	for _, assignment := range facetProperties {
+		facet, key, value, err := parseFacetPropertyAssignment(assignment)
+		if err != nil {
+			return err
+		}
+		if facetPropertyValues[facet] == nil {
+			facetPropertyValues[facet] = make(map[string]string)
+		}
+		facetPropertyValues[facet][key] = value
+	}
+	if len(commonProperties) == 0 {
+		commonProperties = nil
+	}
+	if len(facetPropertyValues) == 0 {
+		facetPropertyValues = nil
+	}
+	entity, err := service.Create(context.Background(), domain.Entity{
+		Kind:     kind,
+		Project:  scope.Project,
+		Title:    core.DecodeEscapes(strings.Join(pos, " ")),
+		Body:     core.DecodeEscapes(*body),
+		ParentID: parentID,
+		SiblingOrder: func() int {
+			if *order > 0 {
+				return *order
+			}
+			return 0
+		}(),
+		Status:          status,
+		State:           parsedState,
+		FacetSet:        facetSet,
+		Properties:      commonProperties,
+		FacetProperties: facetPropertyValues,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Created %s  %s  %s\n", domain.DisplayID(entity.ID), entity.Kind, entity.Title)
+	return nil
+}
+
+func runV2List(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	kind := fs.String("kind", "", "note, task, or idea")
+	status := fs.String("status", "", "task status")
+	state := fs.String("state", "", "Rune lifecycle state")
+	query := fs.String("query", "", "search title and body")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	sortBy := fs.String("sort", "", "updated_at, created_at, title, priority, status, or sibling_order")
+	reverse := fs.Bool("reverse", false, "reverse sort direction")
+	all := fs.Bool("all", false, "all projects in the workspace")
+	global := fs.Bool("global", false, "all projects in the workspace")
+	deleted := fs.Bool("deleted", false, "include deleted tombstones")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "state": true, "query": true, "parent": true, "sort": true, "deleted": false})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	scope, service, closeStore, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	projectName := scope.Project
+	if *all || *global {
+		projectName = ""
+	}
+	options := domain.ListOptions{Project: projectName, Query: *query, IncludeDeleted: *deleted}
+	if *kind != "" {
+		options.Kind = domain.Kind(*kind)
+		if options.Kind != domain.KindNote && options.Kind != domain.KindTask && options.Kind != domain.KindIdea {
+			return fmt.Errorf("unknown v2 kind %q; use note, task, or idea", *kind)
+		}
+	}
+	if *status != "" {
+		parsed, err := domain.NormalizeStatus(*status)
+		if err != nil {
+			return err
+		}
+		options.Status = parsed
+	}
+	if *state != "" {
+		parsed, err := domain.NormalizeRuneState(*state)
+		if err != nil {
+			return err
+		}
+		options.State = parsed
+	}
+	if *parent != "" {
+		parentRune, err := service.Get(context.Background(), *parent)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		options.ParentID = parentRune.ID
+	}
+	if *sortBy != "" {
+		parsed, err := domain.NormalizeRuneSort(*sortBy)
+		if err != nil {
+			return err
+		}
+		options.SortBy = parsed
+	}
+	options.Reverse = *reverse
+	items, err := service.List(context.Background(), options)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(stdout, "No v2 entities.")
+		return nil
+	}
+	for _, item := range items {
+		status := string(item.State)
+		if status == "" {
+			status = string(item.Status)
+		}
+		if status == "" {
+			status = "note"
+		}
+		if item.DeletedAt != nil {
+			status = "deleted"
+		}
+		fmt.Fprintf(stdout, "%s  %-4s  %-10s  %s", domain.DisplayID(item.ID), item.Kind, status, item.Title)
+		if item.Project != "" {
+			fmt.Fprintf(stdout, "  [%s]", item.Project)
+		}
+		fmt.Fprintln(stdout)
+	}
+	return nil
+}
+
+func runV2Show(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 show", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	deleted := fs.Bool("deleted", false, "include a deleted tombstone")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "deleted": false})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 show requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	var entity domain.Entity
+	if *deleted {
+		entity, err = service.GetIncludingDeleted(context.Background(), pos[0])
+	} else {
+		entity, err = service.Get(context.Background(), pos[0])
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "ID: %s\nRef: %s\nKind: %s\nState: %s\nTitle: %s\nRevision: %d\n", entity.ID, entity.Reference(), entity.Kind, entity.State, entity.Title, entity.Revision)
+	fmt.Fprintf(stdout, "Facets: %s\n", strings.Join(runeFacetNames(entity.Facets()), ", "))
+	printRuneProperties(stdout, entity)
+	if entity.Project != "" {
+		fmt.Fprintf(stdout, "Project: %s\n", entity.Project)
+	}
+	if entity.Status != "" {
+		fmt.Fprintf(stdout, "Status: %s\n", entity.Status)
+	}
+	if entity.DeletedAt != nil {
+		fmt.Fprintf(stdout, "Deleted at: %s\n", entity.DeletedAt.UTC().Format(time.RFC3339))
+	}
+	if len(entity.Tags) > 0 {
+		fmt.Fprintf(stdout, "Tags: #%s\n", strings.Join(entity.Tags, " #"))
+	}
+	if entity.Body != "" {
+		fmt.Fprintf(stdout, "\n%s\n", entity.Body)
+	}
+	links, err := service.Links(context.Background(), entity.ID)
+	if err != nil {
+		return err
+	}
+	if len(links) > 0 {
+		fmt.Fprintln(stdout, "\nLinks:")
+		for _, link := range links {
+			fmt.Fprintf(stdout, "- %s %s %s\n", link.Kind, domain.DisplayID(link.FromID), domain.DisplayID(link.ToID))
+		}
+	}
+	return nil
+}
+
+func runV2Edit(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 edit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	title := fs.String("title", "", "new title")
+	body := fs.String("body", "", "replace body")
+	appendBody := fs.String("end", "", "append body")
+	parent := fs.String("parent", "", "parent Rune id or rune:// reference")
+	order := fs.Int("order", 0, "sibling order")
+	state := fs.String("state", "", "Rune lifecycle state")
+	facets := fs.String("facets", "", "comma-separated Rune facets")
+	var properties repeatedFlag
+	var facetProperties repeatedFlag
+	var removeProperties repeatedFlag
+	var removeFacetProperties repeatedFlag
+	fs.Var(&properties, "property", "set common Rune property key=value; repeatable")
+	fs.Var(&facetProperties, "facet-property", "set facet property facet.key=value; repeatable")
+	fs.Var(&removeProperties, "remove-property", "remove common Rune property key; repeatable")
+	fs.Var(&removeFacetProperties, "remove-facet-property", "remove facet property facet.key; repeatable")
+	status := fs.String("status", "", "task status")
+	priority := fs.Int("priority", 0, "priority")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "title": true, "body": true, "end": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true, "remove-property": true, "remove-facet-property": true, "status": true, "priority": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 edit requires one id")
+	}
+	provided := make(map[string]bool)
+	fs.Visit(func(flag *flag.Flag) {
+		provided[flag.Name] = true
+	})
+	update := domain.Update{ExpectedRevision: *revision}
+	changed := false
+	parentID := ""
+	if provided["title"] {
+		update.Title = stringUpdate(core.DecodeEscapes(*title))
+		changed = true
+	}
+	if provided["body"] {
+		update.Body = stringUpdate(core.DecodeEscapes(*body))
+		changed = true
+	}
+	if provided["end"] {
+		update.AppendBody = stringUpdate(core.DecodeEscapes(*appendBody))
+		changed = true
+	}
+	if provided["parent"] {
+		parentID = strings.TrimSpace(*parent)
+		update.ParentID = &parentID
+		changed = true
+	}
+	if provided["order"] {
+		update.SiblingOrder = order
+		changed = true
+	}
+	if provided["facets"] {
+		parsed := splitCSV(*facets)
+		update.Facets = &[]domain.RuneFacet{}
+		for _, facet := range parsed {
+			*update.Facets = append(*update.Facets, domain.RuneFacet(facet))
+		}
+		changed = true
+	}
+	if len(properties) > 0 || len(facetProperties) > 0 || len(removeProperties) > 0 || len(removeFacetProperties) > 0 {
+		changes, err := propertyChangesFromFlags(properties, facetProperties, removeProperties, removeFacetProperties)
+		if err != nil {
+			return err
+		}
+		update.PropertyChanges = changes
+		changed = true
+	}
+	if provided["state"] {
+		parsed, err := domain.NormalizeRuneState(*state)
+		if err != nil {
+			return err
+		}
+		update.State = &parsed
+		changed = true
+	}
+	if provided["status"] {
+		parsed, err := domain.NormalizeStatus(*status)
+		if err != nil {
+			return err
+		}
+		update.Status = &parsed
+		changed = true
+	}
+	if provided["priority"] {
+		update.Priority = priority
+		changed = true
+	}
+	if !changed {
+		return errors.New("v2 edit requires --title, --body, --end, --parent, --order, --facets, --property, --facet-property, --remove-property, --remove-facet-property, --state, --status, or --priority")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	if provided["parent"] && parentID != "" {
+		parentRune, err := service.Get(context.Background(), parentID)
+		if err != nil {
+			return fmt.Errorf("resolve parent Rune: %w", err)
+		}
+		parentID = parentRune.ID
+		update.ParentID = &parentID
+	}
+	entity, err := service.Update(context.Background(), pos[0], update)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Updated %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Delete(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 delete", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	confirm := fs.Bool("confirm", false, "confirm reversible tombstone")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true, "confirm": false})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 delete requires one id")
+	}
+	if !*confirm {
+		return errors.New("v2 delete requires --confirm; this creates a reversible tombstone")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Delete(context.Background(), pos[0], *revision)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Tombstoned %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Restore(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 restore", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 restore requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Restore(context.Background(), pos[0], *revision)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Restored %s  %s\n", domain.DisplayID(entity.ID), entity.Title)
+	return nil
+}
+
+func runV2Status(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	revision := fs.Int64("revision", 0, "expected revision")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "revision": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("v2 status requires an id and status")
+	}
+	status, err := domain.NormalizeStatus(pos[1])
+	if err != nil {
+		return err
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.SetTaskStatus(context.Background(), pos[0], status, *revision)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Status %s  %s\n", domain.DisplayID(entity.ID), entity.Status)
+	return nil
+}
+
+func runV2Sync(args []string, stdout io.Writer, cwd string) error {
+	if len(args) > 0 && args[0] == "serve" {
+		return runV2SyncServe(args[1:], stdout, cwd)
+	}
+	fs := flag.NewFlagSet("rune v2 sync", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "sync HTTP bearer token")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "remote": true, "artifact-root": true, "token": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	var status domain.SyncStatus
+	var conflicts []domain.Conflict
+	var pushed, pulled int
+	var protocol string
+	if strings.TrimSpace(*remote) != "" {
+		_, service, closeStore, _, err := openV2ExecutionService(cwd, "", *workspace, *dbPath, *artifactRoot)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		peer, closePeer, err := openV2SyncPeer(*remote, *token)
+		if err != nil {
+			return err
+		}
+		defer closePeer()
+		var syncClient application.SyncClient = service
+		report, err := syncClient.Sync(context.Background(), peer)
+		if err != nil {
+			return err
+		}
+		protocol, status, conflicts, pushed, pulled = report.Protocol, report.Status, report.Conflicts, report.Pushed, report.Pulled
+	} else {
+		_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		status, err = service.SyncStatus(context.Background())
+		if err != nil {
+			return err
+		}
+		conflicts, err = service.Conflicts(context.Background())
+		if err != nil {
+			return err
+		}
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(struct {
+			Protocol  string            `json:"protocol,omitempty"`
+			Status    domain.SyncStatus `json:"status"`
+			Conflicts []domain.Conflict `json:"conflicts"`
+			Pushed    int               `json:"pushed"`
+			Pulled    int               `json:"pulled"`
+		}{Protocol: protocol, Status: status, Conflicts: conflicts, Pushed: pushed, Pulled: pulled}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if protocol != "" {
+		fmt.Fprintf(stdout, "Protocol: %s\n", protocol)
+	}
+	fmt.Fprintf(stdout, "Workspace: %s\nRemote: %s\nLocal cursor: %d\nPushed changes: %d\nPulled changes: %d\nPending changes: %d\nOpen conflicts: %d\n",
+		status.WorkspaceID, status.RemoteState, status.LocalCursor, pushed, pulled, status.PendingChanges, status.OpenConflicts)
+	for _, conflict := range conflicts {
+		fmt.Fprintf(stdout, "Conflict %s  %s  entity %s  local %d / remote %d\n",
+			domain.DisplayID(conflict.ID), conflict.Kind, domain.DisplayID(conflict.EntityID), conflict.LocalRevision, conflict.RemoteRevision)
+	}
+	return nil
+}
+
+func runV2SyncServe(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 sync serve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	listen := fs.String("listen", ":8787", "listen address")
+	dbPath := fs.String("db", strings.TrimSpace(os.Getenv("RUNE_SYNC_DB")), "server database path")
+	workspace := fs.String("workspace", "local", "server workspace id")
+	artifactRoot := fs.String("artifact-root", strings.TrimSpace(os.Getenv("RUNE_SYNC_ARTIFACTS")), "server artifact directory")
+	token := fs.String("token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "required sync HTTP bearer token")
+	cert := fs.String("cert", "", "TLS certificate path")
+	key := fs.String("key", "", "TLS private key path")
+	pos, err := parseFlags(fs, args, map[string]bool{"listen": true, "db": true, "workspace": true, "artifact-root": true, "token": true, "cert": true, "key": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	if strings.TrimSpace(*token) == "" {
+		return errors.New("v2 sync serve requires --token or RUNE_SYNC_TOKEN")
+	}
+	if (strings.TrimSpace(*cert) == "") != (strings.TrimSpace(*key) == "") {
+		return errors.New("v2 sync serve requires both --cert and --key for TLS")
+	}
+	scope, err := core.ResolveScope(cwd, false, "")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*dbPath) == "" {
+		*dbPath = filepath.Join(scope.Home, "rune-sync.db")
+	}
+	store, err := v2sqlite.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if strings.TrimSpace(*artifactRoot) == "" {
+		*artifactRoot = filepath.Join(scope.Home, "rune-sync-artifacts")
+	}
+	artifactStore, err := v2artifacts.Open(*artifactRoot)
+	if err != nil {
+		return err
+	}
+	syncServer, err := runesync.NewServer(store, artifactStore, *workspace, *token)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{Addr: *listen, Handler: syncServer}
+	scheme := "http"
+	if strings.TrimSpace(*cert) != "" {
+		scheme = "https"
+	}
+	fmt.Fprintf(stdout, "Rune %s server listening on %s (workspace %s)\n", runesync.ProtocolVersion, syncServerURL(scheme, *listen), *workspace)
+	if scheme == "https" {
+		err = server.ListenAndServeTLS(*cert, *key)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func runV2Web(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 web", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	listen := fs.String("listen", ":8788", "web server listen address")
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	token := fs.String("token", webTokenDefault(), "required browser/API bearer token")
+	remote := fs.String("remote", strings.TrimSpace(os.Getenv("RUNE_SYNC_REMOTE")), "file-backed peer directory or sync HTTP URL")
+	syncToken := fs.String("sync-token", strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN")), "token for the configured remote sync peer")
+	cert := fs.String("cert", "", "TLS certificate path")
+	key := fs.String("key", "", "TLS private key path")
+	pos, err := parseFlags(fs, args, map[string]bool{"listen": true, "project": true, "db": true, "workspace": true, "artifact-root": true, "token": true, "remote": true, "sync-token": true, "cert": true, "key": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	if strings.TrimSpace(*token) == "" {
+		return errors.New("v2 web requires --token, RUNE_WEB_TOKEN, or RUNE_SYNC_TOKEN")
+	}
+	if (strings.TrimSpace(*cert) == "") != (strings.TrimSpace(*key) == "") {
+		return errors.New("v2 web requires both --cert and --key for TLS")
+	}
+	scope, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	var syncTarget runesync.SyncTarget
+	var closeSyncTarget func() error
+	if strings.TrimSpace(*remote) != "" {
+		peerToken := strings.TrimSpace(*syncToken)
+		if peerToken == "" {
+			peerToken = strings.TrimSpace(*token)
+		}
+		syncTarget, closeSyncTarget, err = openV2SyncPeer(*remote, peerToken)
+		if err != nil {
+			return err
+		}
+		defer closeSyncTarget()
+	}
+	webServer, err := runeweb.NewServer(service, *workspace, scope.Project, *token, syncTarget)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Addr:              *listen,
+		Handler:           webServer,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       45 * time.Second,
+		WriteTimeout:      45 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	scheme := "http"
+	if strings.TrimSpace(*cert) != "" {
+		scheme = "https"
+	}
+	fmt.Fprintf(stdout, "Rune web listening on %s (workspace %s)\n", syncServerURL(scheme, *listen), *workspace)
+	if scheme == "https" {
+		err = server.ListenAndServeTLS(*cert, *key)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func webTokenDefault() string {
+	if value := strings.TrimSpace(os.Getenv("RUNE_WEB_TOKEN")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv("RUNE_SYNC_TOKEN"))
+}
+
+func openV2SyncPeer(remote, token string) (runesync.SyncTarget, func() error, error) {
+	remote = strings.TrimSpace(remote)
+	if strings.HasPrefix(strings.ToLower(remote), "http://") || strings.HasPrefix(strings.ToLower(remote), "https://") {
+		peer, err := runesync.OpenHTTPPeer(remote, token)
+		if err != nil {
+			return nil, nil, err
+		}
+		return peer, peer.Close, nil
+	}
+	peer, err := runesync.OpenFilePeer(remote)
+	if err != nil {
+		return nil, nil, err
+	}
+	return peer, peer.Close, nil
+}
+
+func syncServerURL(scheme, listen string) string {
+	listen = strings.TrimSpace(listen)
+	if strings.HasPrefix(listen, ":") {
+		listen = "localhost" + listen
+	}
+	return scheme + "://" + listen
+}
+
+func runV2Search(args []string, stdout io.Writer, cwd string) error {
+	valueFlags := map[string]bool{"project": true, "db": true, "workspace": true, "kind": true, "status": true, "query": true}
+	var flags []string
+	var query []string
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			query = append(query, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if equal := strings.IndexByte(name, '='); equal >= 0 {
+			name = name[:equal]
+		}
+		if valueFlags[name] && !strings.Contains(arg, "=") && index+1 < len(args) {
+			index++
+			flags = append(flags, args[index])
+		}
+	}
+	if len(query) == 0 {
+		return errors.New("v2 search requires a query")
+	}
+	flags = append(flags, "--query", strings.Join(query, " "))
+	return runV2List(flags, stdout, cwd)
+}
+
+func runV2Link(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 link", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	kind := fs.String("kind", "references", "link kind")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true, "kind": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("v2 link requires a from id and to id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	from, err := service.Get(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	to, err := service.Get(context.Background(), pos[1])
+	if err != nil {
+		return err
+	}
+	link, err := service.Link(context.Background(), from.ID, to.ID, *kind)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Linked %s %s %s\n", domain.DisplayID(from.ID), link.Kind, domain.DisplayID(to.ID))
+	return nil
+}
+
+func runV2Links(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 links", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 links requires one id")
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, "", *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	entity, err := service.Get(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	links, err := service.Links(context.Background(), entity.ID)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		fmt.Fprintf(stdout, "%s  %s  %s\n", link.Kind, domain.DisplayID(link.FromID), domain.DisplayID(link.ToID))
+	}
+	return nil
+}
+
+func runV2Queue(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 queue", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	provider := fs.String("provider", "fake", "agent provider")
+	model := fs.String("model", "local", "model profile")
+	permission := fs.String("permission", "read-only", "permission policy")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "provider": true, "model": true, "permission": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 queue requires one task id")
+	}
+	policy, err := domain.NormalizePermissionPolicy(*permission)
+	if err != nil {
+		return err
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.QueueRun(context.Background(), pos[0], *provider, *model, policy)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(run, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	fmt.Fprintf(stdout, "Queued run %s  task %s  provider %s\n", domain.DisplayID(run.ID), domain.DisplayID(run.TaskID), run.Provider)
+	fmt.Fprintf(stdout, "Context artifact: %s\n", domain.DisplayID(run.ContextArtifactID))
+	return nil
+}
+
+func runV2Run(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 run requires one queued run id")
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.ExecuteRun(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Run %s  %s  %s\n", domain.DisplayID(run.ID), run.Status, run.Summary)
+	return nil
+}
+
+func runV2Cancel(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 cancel", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 cancel requires one run id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	run, err := service.CancelRun(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Run %s  %s\n", domain.DisplayID(run.ID), run.Status)
+	return nil
+}
+
+func runV2Runs(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 runs", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	status := fs.String("status", "", "run status")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "status": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) > 1 {
+		return errors.New("v2 runs accepts at most one task id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	options := domain.RunListOptions{}
+	if *status != "" {
+		options.Status, err = domain.NormalizeRunStatus(*status)
+		if err != nil {
+			return err
+		}
+	}
+	if len(pos) == 1 {
+		task, err := service.Get(context.Background(), pos[0])
+		if err != nil {
+			return err
+		}
+		options.TaskID = task.ID
+	}
+	runs, err := service.Runs(context.Background(), options)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(runs, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(runs) == 0 {
+		fmt.Fprintln(stdout, "No v2 runs.")
+		return nil
+	}
+	for _, run := range runs {
+		fmt.Fprintf(stdout, "%s  %-9s  task %s  %s", domain.DisplayID(run.ID), run.Status, domain.DisplayID(run.TaskID), run.Provider)
+		if run.Summary != "" {
+			fmt.Fprintf(stdout, "  %s", run.Summary)
+		}
+		fmt.Fprintln(stdout)
+	}
+	return nil
+}
+
+func runV2Artifacts(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 artifacts", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	jsonOut := fs.Bool("json", false, "json")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 artifacts requires one run id")
+	}
+	_, service, closeService, _, err := openV2Service(cwd, *project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	items, err := service.Artifacts(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(stdout, "No v2 artifacts.")
+		return nil
+	}
+	for _, artifact := range items {
+		fmt.Fprintf(stdout, "%s  %-8s  %-20s  %d bytes  sha256:%s\n", domain.DisplayID(artifact.ID), artifact.Kind, artifact.Name, artifact.SizeBytes, artifact.SHA256[:12])
+	}
+	return nil
+}
+
+func runV2Artifact(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 artifact", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	artifactRoot := fs.String("artifact-root", "", "content-addressed artifact directory")
+	raw := fs.Bool("raw", false, "write content only")
+	jsonOut := fs.Bool("json", false, "json metadata")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "artifact-root": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 artifact requires one artifact id")
+	}
+	_, service, closeService, _, err := openV2ExecutionService(cwd, *project, *workspace, *dbPath, *artifactRoot)
+	if err != nil {
+		return err
+	}
+	defer closeService()
+	if *jsonOut {
+		artifact, err := service.Artifact(context.Background(), pos[0])
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(artifact, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, string(data))
+		return nil
+	}
+	artifact, content, err := service.ReadArtifact(context.Background(), pos[0])
+	if err != nil {
+		return err
+	}
+	if *raw {
+		_, err = stdout.Write(content)
+		return err
+	}
+	fmt.Fprintf(stdout, "ID: %s\nKind: %s\nName: %s\nMedia type: %s\nSize: %d bytes\nSHA-256: %s\nRetention: %s\nSecret state: %s\n\nContent:\n", artifact.ID, artifact.Kind, artifact.Name, artifact.MediaType, artifact.SizeBytes, artifact.SHA256, artifact.Retention, artifact.SecretState)
+	if strings.HasPrefix(artifact.MediaType, "text/") || artifact.MediaType == "application/json" {
+		fmt.Fprintln(stdout, string(content))
+	} else {
+		fmt.Fprintln(stdout, "(binary artifact; use --raw to write content)")
+	}
+	return nil
+}
+
+func runV2Import(args []string, stdout io.Writer, cwd string) error {
+	fs := flag.NewFlagSet("rune v2 import", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	project := fs.String("project", "", "project")
+	dbPath := fs.String("db", "", "v2 database path")
+	workspace := fs.String("workspace", "local", "workspace id")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New("v2 import requires one Markdown file")
+	}
+	bundle, err := markdown.ReadFile(pos[0], *project, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	_, service, closeStore, _, err := openV2Service(cwd, bundle.Project, *workspace, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	report, err := service.Import(context.Background(), bundle)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Imported %d item(s), skipped %d from %s\n", report.Created, report.Skipped, report.SourcePath)
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(stdout, "Warning: %s\n", warning)
+	}
+	return nil
+}
+
+func openV2Service(cwd, project, workspace, dbPath string) (core.Scope, application.V2Service, func() error, string, error) {
+	scope, store, closeStore, dbPath, err := openV2Store(cwd, project, workspace, dbPath)
+	if err != nil {
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	return scope, application.NewV2Service(store, workspace), closeStore, dbPath, nil
+}
+
+func openV2ExecutionService(cwd, project, workspace, dbPath, artifactRoot string) (core.Scope, application.V2Service, func() error, string, error) {
+	scope, store, closeStore, dbPath, err := openV2Store(cwd, project, workspace, dbPath)
+	if err != nil {
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	if strings.TrimSpace(artifactRoot) == "" {
+		artifactRoot = strings.TrimSpace(os.Getenv("RUNE_V2_ARTIFACTS"))
+	}
+	if strings.TrimSpace(artifactRoot) == "" {
+		artifactRoot = filepath.Join(scope.Home, "rune-v2-artifacts")
+	}
+	artifactStore, err := v2artifacts.Open(artifactRoot)
+	if err != nil {
+		_ = closeStore()
+		return core.Scope{}, application.V2Service{}, nil, "", err
+	}
+	return scope, application.NewV2ExecutionService(store, workspace, artifactStore), closeStore, dbPath, nil
+}
+
+func openV2Store(cwd, project, workspace, dbPath string) (core.Scope, *v2sqlite.Store, func() error, string, error) {
+	scope, err := core.ResolveScope(cwd, false, project)
+	if err != nil {
+		return core.Scope{}, nil, nil, "", err
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		dbPath = strings.TrimSpace(os.Getenv("RUNE_V2_DB"))
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		dbPath = v2sqlite.DefaultPath(scope.Home)
+	}
+	store, err := v2sqlite.Open(dbPath)
+	if err != nil {
+		return core.Scope{}, nil, nil, "", err
+	}
+	return scope, store, store.Close, dbPath, nil
 }
 
 type codexReasoningFlag struct {
@@ -799,6 +2098,99 @@ func splitCSV(value string) []string {
 	return strings.Split(value, ",")
 }
 
+type repeatedFlag []string
+
+func (f *repeatedFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatedFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func parsePropertyAssignment(value string) (string, string, error) {
+	separator := strings.IndexByte(value, '=')
+	if separator < 1 {
+		return "", "", fmt.Errorf("property %q must use key=value", value)
+	}
+	key := strings.TrimSpace(value[:separator])
+	if key == "" {
+		return "", "", errors.New("Rune property name is required")
+	}
+	return key, value[separator+1:], nil
+}
+
+func parseFacetPropertyAssignment(value string) (domain.RuneFacet, string, string, error) {
+	assignmentKey, propertyValue, err := parsePropertyAssignment(value)
+	if err != nil {
+		return "", "", "", err
+	}
+	separator := strings.IndexByte(assignmentKey, '.')
+	if separator < 1 || separator == len(assignmentKey)-1 {
+		return "", "", "", fmt.Errorf("facet property %q must use facet.key=value", value)
+	}
+	facet, err := domain.NormalizeRuneFacet(assignmentKey[:separator])
+	if err != nil {
+		return "", "", "", err
+	}
+	key := strings.TrimSpace(assignmentKey[separator+1:])
+	if key == "" {
+		return "", "", "", errors.New("Rune property name is required")
+	}
+	return facet, key, propertyValue, nil
+}
+
+func parseFacetPropertyKey(value string) (domain.RuneFacet, string, error) {
+	key := strings.TrimSpace(value)
+	separator := strings.IndexByte(key, '.')
+	if separator < 1 || separator == len(key)-1 {
+		return "", "", fmt.Errorf("facet property %q must use facet.key", value)
+	}
+	facet, err := domain.NormalizeRuneFacet(key[:separator])
+	if err != nil {
+		return "", "", err
+	}
+	propertyKey := strings.TrimSpace(key[separator+1:])
+	if propertyKey == "" {
+		return "", "", errors.New("Rune property name is required")
+	}
+	return facet, propertyKey, nil
+}
+
+func propertyChangesFromFlags(properties, facetProperties, removals, facetRemovals []string) ([]domain.RunePropertyChange, error) {
+	changes := make([]domain.RunePropertyChange, 0, len(properties)+len(facetProperties)+len(removals)+len(facetRemovals))
+	for _, assignment := range properties {
+		key, value, err := parsePropertyAssignment(assignment)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Key: key, Value: value})
+	}
+	for _, assignment := range facetProperties {
+		facet, key, value, err := parseFacetPropertyAssignment(assignment)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Facet: facet, Key: key, Value: value})
+	}
+	for _, key := range removals {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("Rune property name is required")
+		}
+		changes = append(changes, domain.RunePropertyChange{Key: key, Delete: true})
+	}
+	for _, key := range facetRemovals {
+		facet, propertyKey, err := parseFacetPropertyKey(key)
+		if err != nil {
+			return nil, err
+		}
+		changes = append(changes, domain.RunePropertyChange{Facet: facet, Key: propertyKey, Delete: true})
+	}
+	return changes, nil
+}
+
 func readAll(r io.Reader) (string, error) {
 	if r == nil {
 		return "", nil
@@ -806,6 +2198,45 @@ func readAll(r io.Reader) (string, error) {
 	var buf bytes.Buffer
 	_, err := io.Copy(&buf, r)
 	return buf.String(), err
+}
+
+func stringUpdate(value string) *string {
+	return &value
+}
+
+func runeFacetNames(facets []domain.RuneFacet) []string {
+	names := make([]string, len(facets))
+	for index, facet := range facets {
+		names[index] = string(facet)
+	}
+	return names
+}
+
+func printRuneProperties(w io.Writer, entity domain.Entity) {
+	propertyKeys := make([]string, 0, len(entity.Properties))
+	for key := range entity.Properties {
+		propertyKeys = append(propertyKeys, key)
+	}
+	sort.Strings(propertyKeys)
+	for _, key := range propertyKeys {
+		fmt.Fprintf(w, "Property: %s=%s\n", key, entity.Properties[key])
+	}
+	facetNames := make([]string, 0, len(entity.FacetProperties))
+	for facet := range entity.FacetProperties {
+		facetNames = append(facetNames, string(facet))
+	}
+	sort.Strings(facetNames)
+	for _, facetName := range facetNames {
+		values := entity.FacetProperties[domain.RuneFacet(facetName)]
+		keys := make([]string, 0, len(values))
+		for key := range values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(w, "Facet property: %s.%s=%s\n", facetName, key, values[key])
+		}
+	}
 }
 
 func printItems(w io.Writer, home string, items []*core.Item) {
@@ -1054,6 +2485,33 @@ func printError(w io.Writer, err error) {
 		fmt.Fprintln(w, "\nUse a longer id.")
 		return
 	}
+	var ambiguousV2 *v2sqlite.AmbiguousIDError
+	if errors.As(err, &ambiguousV2) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousV2.Error())
+		for _, item := range ambiguousV2.Matches {
+			fmt.Fprintf(w, "%-8s %s\n", domain.DisplayID(item.ID), item.Title)
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
+	var ambiguousRun *v2sqlite.AmbiguousRunIDError
+	if errors.As(err, &ambiguousRun) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousRun.Error())
+		for _, run := range ambiguousRun.Matches {
+			fmt.Fprintf(w, "%-8s %s %s\n", domain.DisplayID(run.ID), run.Status, domain.DisplayID(run.TaskID))
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
+	var ambiguousArtifact *v2sqlite.AmbiguousArtifactIDError
+	if errors.As(err, &ambiguousArtifact) {
+		fmt.Fprintf(w, "rune: %s\n\n", ambiguousArtifact.Error())
+		for _, artifact := range ambiguousArtifact.Matches {
+			fmt.Fprintf(w, "%-8s %s\n", domain.DisplayID(artifact.ID), artifact.Name)
+		}
+		fmt.Fprintln(w, "\nUse a longer id.")
+		return
+	}
 	fmt.Fprintf(w, "rune: %v\n", err)
 }
 
@@ -1067,6 +2525,7 @@ Usage:
   rune yank <id> [--print]
   rune ticket <id>
   rune codex <id> [--minimal|--low|--medium|--high|--xhigh]
+	  rune v2 <init|capture|list|show|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync [serve]|tui|import> ...
   rune edit <id> --end "details with \n newlines"
   rune done <id>
   rune find "query" --global
@@ -1074,7 +2533,7 @@ Usage:
   rune migrate [file] [--project p] [--force]
 
 Commands:
-  add, list, show, yank, ticket, codex, edit, done, undone, toggle, tag, untag, find
+  add, list, show, yank, ticket, codex, v2, edit, done, undone, toggle, tag, untag, find
   projects, tags, archive, restore, import, init, migrate, path, doctor`)
 }
 

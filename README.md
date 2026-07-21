@@ -8,14 +8,18 @@
 </pre>
 
 <p>
-  <strong>Rune</strong> is a small terminal-native task tracker for catching ideas before they disappear.
+  <strong>Rune</strong> is a terminal-first workspace for capturing ideas,
+  documents, tasks, and agent work before they disappear.
 </p>
 
 <p>
   <code>rune add "fix stuns" --tag combat,bug</code>
 </p>
 
-Rune stores plain Markdown in `~/notes` (and optionally, within your project's root directory, under `.rune`), detects the current git project, and gives every item a short ID that's easy to use from shell.
+The `rune` app presents one workspace through the CLI and TUI. Its legacy
+commands store plain Markdown in `~/notes` (and optionally under `.rune`),
+while the structured preview adds revisioned Runes, links, runs, artifacts,
+and local `sync` behavior.
 
 </div>
 
@@ -44,7 +48,10 @@ Outside a git project, pass `--project` to write directly to
 
 ## Storage
 
-Rune writes Markdown. No database, no hosted service, no sync layer.
+The default legacy commands write Markdown. The current legacy path has no
+hosted service. `sync` is the shared API/protocol boundary for the structured
+workspace; the local file-backed peer is only a development harness, not a
+hosted service or required daemon.
 
 ```text
 ~/notes/
@@ -57,6 +64,82 @@ Set `RUNE_HOME` to use another store.
 ```sh
 RUNE_HOME="$(mktemp -d)" rune add "try rune safely" --project scratch
 ```
+
+The structured Rune workspace is available as an opt-in preview through the
+compatibility namespace `rune v2`. It uses SQLite at `RUNE_HOME/rune-v2.db` by
+default, or an explicit `--db` path. Execution artifacts live in the
+content-addressed `RUNE_HOME/rune-v2-artifacts` directory by default. The
+preview does not provision a cloud service, but it can connect to a private
+single-workspace sync server for device dogfooding:
+
+```sh
+rune v2 capture "design sync" --project rune
+rune v2 capture "sync proposal" --note --facets proposal,research --property audience=team --facet-property proposal.decision=pending
+rune v2 capture "a direction worth keeping" --kind idea --body "develop this into a living Rune"
+rune v2 capture "ready for review" --state ready
+rune v2 list --kind idea --project rune
+rune v2 list --project rune
+rune v2 list --state in_progress
+rune v2 capture "break proposal into a task" --parent rune://<parent-id>
+rune v2 list --parent rune://<parent-id> --sort sibling_order
+rune v2 show rune://<id>
+rune v2 list --json
+rune v2 import path/to/notes.md --project rune --db /path/to/rune-v2.db
+rune v2 queue <task-id>
+rune v2 run <run-id>
+rune v2 cancel <run-id>
+rune v2 runs
+rune v2 artifacts <run-id>
+rune v2 artifact <artifact-id>
+rune v2 edit <id> --title "new title"
+rune v2 edit <id> --state complete
+rune v2 edit <id> --property owner=codex --facet-property proposal.decision=accepted
+rune v2 edit <id> --remove-property audience
+rune v2 delete <id> --confirm
+rune v2 restore <id>
+rune v2 sync
+rune v2 sync --remote /tmp/rune-remote --artifact-root /tmp/rune-artifacts
+rune v2 sync serve --listen 0.0.0.0:8787 --workspace local --token "$RUNE_SYNC_TOKEN"
+rune v2 sync --remote https://sync.example --token "$RUNE_SYNC_TOKEN"
+rune v2 tui --project rune
+rune v2 tui --project rune --remote https://sync.example --token "$RUNE_SYNC_TOKEN" --auto-sync
+rune v2 web --listen 0.0.0.0:8788 --token "$RUNE_WEB_TOKEN" --remote https://sync.example --sync-token "$RUNE_SYNC_TOKEN"
+```
+
+The structured Rune TUI is a client over the shared application contract and
+structured store. Use `1`-`4` to switch workspace, runs, artifacts, and local
+sync status; `a`/`i`/`n` capture a task, idea, or note; `q` queues a task; `x` executes a run; `c`
+cancels it; `/` searches; `f` cycles all/task/idea/note workspace filters; `y`
+starts a background sync when a remote is configured; and `Q` quits. Pass
+`--remote <directory|http(s) URL>` and, for HTTP, `--token` to configure the
+target. `--auto-sync` runs one sync at startup; later syncs are explicit so
+offline and conflict outcomes remain visible. Structured Rune edits are
+revision-checked and recorded in the local sync ledger.
+`rune v2 delete` requires `--confirm` and creates a reversible tombstone rather
+than physically removing the item; `rune v2 restore` clears that tombstone.
+The TUI exposes `e`/`E` for title/body editing, `s` for cycling authored Rune
+state, and displays custom facets and properties alongside the selected Rune.
+`d` plus confirmation tombstones, and `u` restores. `rune v2 sync` reports the
+local change cursor, pending changes, and visible conflicts. A remote sync
+report identifies the embedded `sync.v1` contract. Passing
+`--remote <directory>` exercises the revision-aware push/pull protocol against
+a disposable file-backed development peer, including artifact blobs. Passing
+an HTTP(S) URL uses the authenticated `sync.v1` server and the same change and
+artifact protocol. `rune v2 sync serve` is a single-workspace personal server;
+use it only on a private network without TLS, or provide `--cert` and `--key`
+(or terminate TLS in front of it). Multi-user authorization and production
+deployment remain future work. Set `RUNE_SYNC_REMOTE` and `RUNE_SYNC_TOKEN` to
+make the endpoint the default for CLI and TUI sync commands.
+
+The first browser client is served by `rune v2 web`. It provides an inbox,
+quick capture, detail/body editing, lifecycle changes, reversible tombstones,
+task queueing, recent run activity, search/kind/state filters, and sync status.
+API routes use the same Rune client contract and revision checks as the CLI and
+TUI. The browser asks for the bearer token and keeps it in that browser's
+local storage; use HTTPS (`--cert` and `--key`) when serving beyond a trusted
+local/private network. `--sync-token` (or `RUNE_SYNC_TOKEN`) may be separate
+from the browser/API `--token`. This is an interactive shared-state client,
+not yet an offline PWA with a service-worker outbox.
 
 For notes that should travel with a repository, initialize a project-local
 store:
@@ -117,6 +200,7 @@ rune init [--project lune]
 rune migrate [file] [--project lune] [--force]
 rune path [<id>|--store]
 rune doctor [--fix]
+  rune v2 <init|capture|list|show|edit|delete|restore|status|search|link|links|queue|run|cancel|runs|artifacts|artifact|sync [serve]|tui|import> ...
 ```
 
 Quoted CLI text decodes `\n`, `\t`, and `\\`, so quick terminal capture can

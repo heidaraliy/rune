@@ -29,6 +29,8 @@ REQUIRED_DOCS = [
     "tools/agents/instructions/store-safety.instructions.md",
     "tools/agents/instructions/build-validation.instructions.md",
     "tools/agents/instructions/repo-automation.instructions.md",
+    "tools/agents/instructions/rune-v2-architecture.instructions.md",
+    "docs/rune-v2-architecture.md",
     "tools/agents/checklists/implementation-accuracy-review.md",
     "tools/agents/checklists/risk-class-validation-matrix.md",
     "tools/agents/evals/agent-config-evals.md",
@@ -121,7 +123,7 @@ def validate_references(errors: list[str]) -> None:
         if not path.exists():
             continue
         text = read(path)
-        for match in re.findall(r"`((?:tools/agents|\.codex/skills|\.github)/[^`]+)`", text):
+        for match in re.findall(r"`((?:tools/agents|\.codex/skills|\.github|docs)/[^`]+)`", text):
             if "*" in match or match.endswith("/") or " " in match:
                 continue
             if not (ROOT / match).exists():
