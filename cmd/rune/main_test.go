@@ -101,6 +101,12 @@ func TestRunV2LocalStructuredCaptureLinkAndSearch(t *testing.T) {
 		t.Fatalf("note capture code = %d, stderr=%q", code, stderr.String())
 	}
 	noteID := strings.Fields(stdout.String())[1]
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "capture", "living idea", "--kind", "idea", "--parent", taskID, "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 {
+		t.Fatalf("idea capture code = %d, stderr=%q", code, stderr.String())
+	}
 
 	stdout.Reset()
 	stderr.Reset()
@@ -121,6 +127,13 @@ func TestRunV2LocalStructuredCaptureLinkAndSearch(t *testing.T) {
 	code = run([]string{"v2", "search", "foundation", "--project", "rune", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
 	if code != 0 || !strings.Contains(stdout.String(), "build foundation") {
 		t.Fatalf("search code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"v2", "list", "--kind", "idea", "--db", db}, &stdout, &stderr, strings.NewReader(""), cwd)
+	if code != 0 || !strings.Contains(stdout.String(), "living idea") {
+		t.Fatalf("idea list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 
 	stdout.Reset()

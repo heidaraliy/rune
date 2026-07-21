@@ -70,7 +70,7 @@ func responseJSON(t *testing.T, recorder *httptest.ResponseRecorder, target any)
 func TestServerServesUIHealthAndProtectsAPI(t *testing.T) {
 	server, _ := testServer(t, nil)
 	ui := doRequest(t, server, http.MethodGet, "/", nil, false)
-	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune remember?") || !strings.Contains(ui.Body.String(), "Your Runes") || !strings.Contains(ui.Body.String(), "Ideas") || !strings.Contains(ui.Body.String(), "References") || !strings.Contains(ui.Body.String(), "new-rune") || !strings.Contains(ui.Body.String(), "brand-ascii") || !strings.Contains(ui.Body.String(), "fonts.googleapis.com") {
+	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune record?") || !strings.Contains(ui.Body.String(), "My Runes") || !strings.Contains(ui.Body.String(), "Tombstoned") || !strings.Contains(ui.Body.String(), "Child Runes") || !strings.Contains(ui.Body.String(), "data-view=\"runes\"") || !strings.Contains(ui.Body.String(), "data-record-parent") || !strings.Contains(ui.Body.String(), "data-record-kind=\"idea\"") || !strings.Contains(ui.Body.String(), "brand-ascii") || !strings.Contains(ui.Body.String(), "fonts.googleapis.com") || strings.Contains(ui.Body.String(), "Shared state") || strings.Contains(ui.Body.String(), "All, including tombstones") {
 		t.Fatalf("UI response code=%d body=%q", ui.Code, ui.Body.String())
 	}
 	if ui.Header().Get("X-Content-Type-Options") != "nosniff" || ui.Header().Get("X-Frame-Options") != "DENY" || ui.Header().Get("Content-Security-Policy") == "" {
@@ -153,6 +153,14 @@ func TestServerCRUDIsRevisionCheckedAndTombstoneSafe(t *testing.T) {
 	if deleted.Rune.DeletedAt == nil || deleted.Rune.Revision != 3 {
 		t.Fatalf("deleted Rune=%#v", deleted.Rune)
 	}
+	defaultList := doRequest(t, server, http.MethodGet, "/v1/runes?query=edited+in+browser", nil, true)
+	if defaultList.Code != http.StatusOK || strings.Contains(defaultList.Body.String(), "edited in browser") {
+		t.Fatalf("default list should hide tombstones: status=%d body=%s", defaultList.Code, defaultList.Body.String())
+	}
+	deletedList := doRequest(t, server, http.MethodGet, "/v1/runes?query=edited+in+browser&include_deleted=true", nil, true)
+	if deletedList.Code != http.StatusOK || !strings.Contains(deletedList.Body.String(), "edited in browser") {
+		t.Fatalf("deleted list should expose tombstones: status=%d body=%s", deletedList.Code, deletedList.Body.String())
+	}
 
 	restoredResponse := doRequest(t, server, http.MethodPost, patchPath+"/restore", map[string]any{"expected_revision": 3}, true)
 	if restoredResponse.Code != http.StatusOK {
@@ -164,6 +172,49 @@ func TestServerCRUDIsRevisionCheckedAndTombstoneSafe(t *testing.T) {
 	responseJSON(t, restoredResponse, &restored)
 	if restored.Rune.DeletedAt != nil || restored.Rune.Revision != 4 || restored.Rune.Title != "edited in browser" {
 		t.Fatalf("restored Rune=%#v", restored.Rune)
+	}
+}
+
+func TestServerCreatesIdeasAndReturnsChildren(t *testing.T) {
+	server, _ := testServer(t, nil)
+	parentResponse := doRequest(t, server, http.MethodPost, "/v1/runes", map[string]any{
+		"kind":  "note",
+		"title": "root thought",
+	}, true)
+	if parentResponse.Code != http.StatusCreated {
+		t.Fatalf("parent create status=%d body=%s", parentResponse.Code, parentResponse.Body.String())
+	}
+	var parent struct {
+		Rune domain.Rune `json:"rune"`
+	}
+	responseJSON(t, parentResponse, &parent)
+
+	ideaResponse := doRequest(t, server, http.MethodPost, "/v1/runes", map[string]any{
+		"kind":      "idea",
+		"title":     "child direction",
+		"body":      "keep developing this",
+		"parent_id": parent.Rune.ID,
+	}, true)
+	if ideaResponse.Code != http.StatusCreated || !strings.Contains(ideaResponse.Body.String(), `"kind":"idea"`) {
+		t.Fatalf("idea create status=%d body=%s", ideaResponse.Code, ideaResponse.Body.String())
+	}
+
+	detailResponse := doRequest(t, server, http.MethodGet, "/v1/runes/"+parent.Rune.ID, nil, true)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("parent detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail struct {
+		Rune     domain.Rune   `json:"rune"`
+		Children []domain.Rune `json:"children"`
+	}
+	responseJSON(t, detailResponse, &detail)
+	if len(detail.Children) != 1 || detail.Children[0].Kind != domain.KindIdea || detail.Children[0].ParentID != parent.Rune.ID {
+		t.Fatalf("parent detail children=%#v", detail.Children)
+	}
+
+	ideaList := doRequest(t, server, http.MethodGet, "/v1/runes?kind=idea", nil, true)
+	if ideaList.Code != http.StatusOK || !strings.Contains(ideaList.Body.String(), "child direction") {
+		t.Fatalf("idea list status=%d body=%s", ideaList.Code, ideaList.Body.String())
 	}
 }
 

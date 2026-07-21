@@ -38,10 +38,11 @@ process, and this project should not use `syncd` as a product name.
 
 A Rune is the durable, addressable workspace object. It has a stable ID,
 workspace ownership, revision history, a Markdown body, structured properties,
-relationships, and optional capabilities such as task execution. A note is a
-Rune. A task is a Rune with task capability. Proposals, braindumps, decisions,
-and research items are other document-oriented Rune presentations, not separate
-identity systems.
+relationships, and optional capabilities such as task execution. A note, idea,
+or task is a Rune; tasks carry task execution capability while ideas remain
+first-class living documents. Proposals, braindumps, decisions, and research
+items are other document-oriented Rune presentations, not separate identity
+systems.
 
 The transitional v2 implementation may retain `Entity` and `Kind` internally,
 but new contracts should use Rune terminology and leave room for additional
@@ -150,7 +151,7 @@ content.
 Mutations carry an actor/device, revision, timestamp, and operation identity.
 The local store and server use revisions or cursors to synchronize. Conflicts
 must be visible and recoverable; silent last-write-wins behavior is not an
-acceptable default for authored note or task data.
+acceptable default for authored note, idea, or task data.
 
 ## Storage And Sync Boundary
 
@@ -465,7 +466,7 @@ remote workers using the same `sync` API and run contract.
 - The sync view shows configured target identity, connection/error state,
   cursors, pending changes, and selectable conflict rows with both payloads.
 - Workspace search remains available through `/`, while `f` cycles compact
-  task/note/all kind filters; existing edit, tombstone, restore, and run flows
+  task/idea/note/all kind filters; existing edit, tombstone, restore, and run flows
   remain discoverable in help/footer text.
 - Tests use temporary SQLite stores and file peers; no real `~/notes`, public
   endpoint, or background daemon is required.
@@ -474,9 +475,10 @@ remote workers using the same `sync` API and run contract.
 
 - `rune v2 web` serves an embedded responsive browser client and requires an
   explicit bearer token; optional TLS is available through `--cert` and `--key`.
-- Browser capture, list/search/filter, detail/body edit, lifecycle changes,
-  tombstone/restore, and task queueing route through the shared `RuneClient`
-  contract and preserve revision checks.
+- Browser capture supports task, idea, and note Runes; list/search/filter,
+  parent/child detail, body edit, lifecycle changes, tombstone/restore, and task
+  queueing route through the shared `RuneClient` contract and preserve revision
+  checks.
 - The browser exposes recent run activity, sync status, and sync-now while
   keeping remote target construction in the CLI/server boundary.
 - JSON routes use bounded request bodies, stable Rune/domain shapes, explicit

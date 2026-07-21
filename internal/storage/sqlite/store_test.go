@@ -25,7 +25,7 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-func TestOpenUpgradesSlice4DatabaseToSlice6Schema(t *testing.T) {
+func TestOpenUpgradesSlice4DatabaseToSlice7Schema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rune-v2.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -76,8 +76,8 @@ func TestOpenUpgradesSlice4DatabaseToSlice6Schema(t *testing.T) {
 	if err := store.db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("schema version = %d, want 6", version)
+	if version != 7 {
+		t.Fatalf("schema version = %d, want 7", version)
 	}
 	var firstOrder, secondOrder int
 	if err := store.db.QueryRow("SELECT sibling_order FROM entities WHERE id='old-a'").Scan(&firstOrder); err != nil {
@@ -96,6 +96,13 @@ func TestOpenUpgradesSlice4DatabaseToSlice6Schema(t *testing.T) {
 	if facets != `["document"]` || state != string(domain.StateDraft) {
 		t.Fatalf("migrated Rune metadata = facets %q state %q", facets, state)
 	}
+	var entitySchema string
+	if err := store.db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='entities'").Scan(&entitySchema); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(entitySchema, "'idea'") {
+		t.Fatalf("migrated entity schema does not allow ideas: %s", entitySchema)
+	}
 }
 
 func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
@@ -109,11 +116,18 @@ func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	idea, err := store.Create(ctx, domain.Entity{Kind: domain.KindIdea, WorkspaceID: "local", Project: "rune", Title: "shape the hierarchy", ParentID: note.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idea.ParentID != note.ID || idea.Facets()[1] != domain.FacetIdea {
+		t.Fatalf("created idea = %#v", idea)
+	}
 	items, err := store.List(ctx, domain.ListOptions{WorkspaceID: "local", Project: "rune"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 || items[0].Title != "build store" {
+	if len(items) != 3 {
 		t.Fatalf("items = %#v", items)
 	}
 	got, err := store.Get(ctx, domain.DisplayID(task.ID), "local")
@@ -128,6 +142,61 @@ func TestOpenMigratesAndPersistsTypedEntities(t *testing.T) {
 	}
 	if got.State != domain.StateReady || len(got.Facets()) != 2 || !got.HasFacet(domain.FacetTask) {
 		t.Fatalf("task Rune metadata = %#v", got)
+	}
+}
+
+func TestIdeaKindMigrationPreservesHierarchyAndLinks(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	parent, err := store.Create(ctx, domain.Entity{Kind: domain.KindNote, WorkspaceID: "local", Title: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Create(ctx, domain.Entity{Kind: domain.KindTask, WorkspaceID: "local", ParentID: parent.ID, Title: "child", Status: domain.StatusReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := store.CreateLink(ctx, domain.Link{WorkspaceID: "local", FromID: parent.ID, ToID: child.ID, Kind: "contains"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedRun, queuedArtifact, err := store.QueueRun(ctx, domain.Run{
+		WorkspaceID: "local",
+		TaskID:      child.ID,
+		Provider:    "fake",
+	}, &domain.Artifact{
+		Kind:        "context",
+		Name:        "context.json",
+		MediaType:   "application/json",
+		SHA256:      strings.Repeat("0", 64),
+		StorageKey:  "runs/context.json",
+		Retention:   "normal",
+		SecretState: "clear",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version=7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrateIdeaKind(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, child.ID, "local")
+	if err != nil || got.ParentID != parent.ID {
+		t.Fatalf("migrated hierarchy = %#v, err=%v", got, err)
+	}
+	links, err := store.ListLinks(ctx, "local", parent.ID)
+	if err != nil || len(links) != 1 || links[0].ID != link.ID {
+		t.Fatalf("migrated links = %#v, err=%v", links, err)
+	}
+	runs, err := store.ListRuns(ctx, domain.RunListOptions{WorkspaceID: "local", TaskID: child.ID})
+	if err != nil || len(runs) != 1 || runs[0].ID != queuedRun.ID {
+		t.Fatalf("migrated runs = %#v, err=%v", runs, err)
+	}
+	artifacts, err := store.ListArtifacts(ctx, "local", queuedRun.ID)
+	if err != nil || len(artifacts) != 1 || artifacts[0].ID != queuedArtifact.ID {
+		t.Fatalf("migrated artifacts = %#v, err=%v", artifacts, err)
 	}
 }
 

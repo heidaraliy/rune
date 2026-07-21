@@ -40,6 +40,24 @@ func TestEntityValidationSeparatesNotesAndTasks(t *testing.T) {
 	}
 }
 
+func TestEntityValidationAndFacetsSupportIdeas(t *testing.T) {
+	idea := Entity{ID: "idea", Kind: KindIdea, WorkspaceID: "local", Title: "shape the product"}
+	if err := idea.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := idea.Facets(); len(got) != 2 || got[0] != FacetDocument || got[1] != FacetIdea {
+		t.Fatalf("idea facets = %#v", got)
+	}
+	if idea.IsTask() || !idea.IsIdea() {
+		t.Fatalf("idea task/idea classification = task:%v idea:%v", idea.IsTask(), idea.IsIdea())
+	}
+
+	idea.Status = StatusReady
+	if err := idea.Validate(); err == nil {
+		t.Fatal("idea task status should fail")
+	}
+}
+
 func TestRuneContractExposesFacetsAndStableReferences(t *testing.T) {
 	rune := Rune{ID: "abc123", Kind: KindTask, WorkspaceID: "local", Title: "ship"}
 	if got := rune.Reference(); got != "rune://abc123" {
@@ -98,6 +116,14 @@ func TestRuneNormalizePersistsFacetsAndCanonicalState(t *testing.T) {
 	}
 	if roundTrip.State != StateReady || !roundTrip.HasFacet(FacetTask) {
 		t.Fatalf("round trip Rune = %#v", roundTrip)
+	}
+
+	idea := Rune{ID: "idea", Kind: KindIdea, WorkspaceID: "local", Title: "living idea", State: StateInProgress}
+	if err := idea.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if idea.Status != "" || !idea.HasFacet(FacetIdea) || idea.IsTask() {
+		t.Fatalf("normalized idea = %#v", idea)
 	}
 }
 

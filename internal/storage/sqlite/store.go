@@ -113,7 +113,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		statements := []string{
 			`CREATE TABLE entities (
 			id TEXT PRIMARY KEY,
-			kind TEXT NOT NULL CHECK (kind IN ('note', 'task')),
+			kind TEXT NOT NULL CHECK (kind IN ('note', 'task', 'idea')),
 			workspace_id TEXT NOT NULL,
 			project TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
@@ -369,7 +369,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 		statements := []string{
 			`ALTER TABLE entities ADD COLUMN facets_json TEXT NOT NULL DEFAULT '[]'`,
 			`ALTER TABLE entities ADD COLUMN state TEXT NOT NULL DEFAULT ''`,
-			`UPDATE entities SET facets_json = CASE WHEN kind='task' THEN '["document","task"]' ELSE '["document"]' END WHERE facets_json='[]'`,
+			`UPDATE entities SET facets_json = CASE
+				WHEN kind='task' THEN '["document","task"]'
+				WHEN kind='idea' THEN '["document","idea"]'
+				ELSE '["document"]'
+			END WHERE facets_json='[]'`,
 			`UPDATE entities SET state = CASE status
 				WHEN 'ready' THEN 'ready'
 				WHEN 'queued' THEN 'ready'
@@ -398,6 +402,115 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("commit Rune state migration: %w", err)
 		}
 		version = 6
+	}
+	if version < 7 {
+		if err := s.migrateIdeaKind(ctx); err != nil {
+			return err
+		}
+		version = 7
+	}
+	return nil
+}
+
+func (s *Store) migrateIdeaKind(ctx context.Context) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open Rune kind migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for Rune kind migration: %w", err)
+	}
+	foreignKeysDisabled := true
+	defer func() {
+		if foreignKeysDisabled {
+			_, _ = conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Rune kind migration: %w", err)
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE entities_new (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL CHECK (kind IN ('note', 'task', 'idea')),
+			workspace_id TEXT NOT NULL,
+			project TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			heading TEXT NOT NULL DEFAULT '',
+			tags_json TEXT NOT NULL DEFAULT '[]',
+			properties_json TEXT NOT NULL DEFAULT '{}',
+			status TEXT NOT NULL DEFAULT '',
+			priority INTEGER NOT NULL DEFAULT 0,
+			parent_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+			source_note_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+			legacy_id TEXT NOT NULL DEFAULT '',
+			legacy_source TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			finished_at TEXT,
+			revision INTEGER NOT NULL DEFAULT 1,
+			deleted_at TEXT,
+			sibling_order INTEGER NOT NULL DEFAULT 0,
+			facets_json TEXT NOT NULL DEFAULT '[]',
+			state TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO entities_new(
+			id, kind, workspace_id, project, title, body, heading, tags_json,
+			properties_json, status, priority, parent_id, source_note_id,
+			legacy_id, legacy_source, created_at, updated_at, finished_at,
+			revision, deleted_at, sibling_order, facets_json, state
+		) SELECT
+			id, kind, workspace_id, project, title, body, heading, tags_json,
+			properties_json, status, priority, parent_id, source_note_id,
+			legacy_id, legacy_source, created_at, updated_at, finished_at,
+			revision, deleted_at, sibling_order, facets_json, state
+		FROM entities`,
+		`DROP TABLE entities`,
+		`ALTER TABLE entities_new RENAME TO entities`,
+		`CREATE UNIQUE INDEX entities_legacy_identity ON entities(workspace_id, legacy_source, legacy_id) WHERE legacy_id <> ''`,
+		`CREATE INDEX entities_workspace_updated ON entities(workspace_id, updated_at DESC)`,
+		`CREATE INDEX entities_workspace_project ON entities(workspace_id, project)`,
+		`CREATE INDEX entities_workspace_parent_order ON entities(workspace_id, parent_id, sibling_order, id)`,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`,
+	}
+	for index, statement := range statements {
+		if index == len(statements)-1 {
+			if _, err := tx.ExecContext(ctx, statement, s.now().Format(time.RFC3339Nano)); err != nil {
+				return fmt.Errorf("apply Rune kind migration %d: %w", index+1, err)
+			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("apply Rune kind migration %d: %w", index+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Rune kind migration: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after Rune kind migration: %w", err)
+	}
+	foreignKeysDisabled = false
+	rows, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("check foreign keys after Rune kind migration: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table, parent string
+		var rowID, foreignKeyID any
+		if err := rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+			return fmt.Errorf("read foreign key check after Rune kind migration: %w", err)
+		}
+		return fmt.Errorf("Rune kind migration left invalid foreign key %s -> %s", table, parent)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("finish foreign key check after Rune kind migration: %w", err)
 	}
 	return nil
 }
@@ -923,7 +1036,7 @@ func (s *Store) Update(ctx context.Context, prefix, workspaceID string, update d
 			return domain.Entity{}, err
 		}
 		if !current.IsTask() {
-			return domain.Entity{}, errors.New("notes cannot have task status")
+			return domain.Entity{}, errors.New("non-task Runes cannot have task status")
 		}
 		if status == "" {
 			status = domain.StatusDraft
@@ -1032,7 +1145,7 @@ func (s *Store) SetTaskStatus(ctx context.Context, prefix, workspaceID string, s
 		return domain.Entity{}, fmt.Errorf("v2 entity %s revision conflict: expected %d, current %d", domain.DisplayID(current.ID), expectedRevision, current.Revision)
 	}
 	if !current.IsTask() {
-		return domain.Entity{}, errors.New("notes cannot have task status")
+		return domain.Entity{}, errors.New("non-task Runes cannot have task status")
 	}
 	status, err = domain.NormalizeStatus(string(status))
 	if err != nil {

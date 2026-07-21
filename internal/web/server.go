@@ -252,7 +252,18 @@ func (s *Server) handleRuneResource(w http.ResponseWriter, r *http.Request, id s
 		if links == nil {
 			links = []domain.Link{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"protocol": protocol, "rune": entity, "links": links})
+		children, err := s.Client.List(r.Context(), domain.ListOptions{
+			ParentID: entity.ID,
+			SortBy:   domain.RuneSortOrder,
+		})
+		if err != nil {
+			writeError(w, statusForError(err), err.Error())
+			return
+		}
+		if children == nil {
+			children = []domain.Rune{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"protocol": protocol, "rune": entity, "links": links, "children": children})
 	case http.MethodPatch:
 		var request updateRuneRequest
 		if err := decodeJSON(w, r, &request); err != nil {
@@ -496,14 +507,14 @@ func listOptions(r *http.Request, defaultProject string) (domain.RuneQuery, erro
 		Project:        strings.TrimSpace(r.URL.Query().Get("project")),
 		Query:          strings.TrimSpace(r.URL.Query().Get("query")),
 		ParentID:       strings.TrimSpace(r.URL.Query().Get("parent_id")),
-		IncludeDeleted: true,
+		IncludeDeleted: false,
 	}
 	if options.Project == "" {
 		options.Project = defaultProject
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("kind")); value != "" {
 		kind := domain.Kind(strings.ToLower(value))
-		if kind != domain.KindNote && kind != domain.KindTask {
+		if kind != domain.KindNote && kind != domain.KindTask && kind != domain.KindIdea {
 			return domain.RuneQuery{}, fmt.Errorf("unknown Rune kind %q", value)
 		}
 		options.Kind = kind

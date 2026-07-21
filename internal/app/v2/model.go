@@ -201,6 +201,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startCapture(domain.KindTask)
 	case "n":
 		m.startCapture(domain.KindNote)
+	case "i":
+		m.startCapture(domain.KindIdea)
 	case "e":
 		m.startEdit(inputEditTitle)
 	case "E":
@@ -293,6 +295,8 @@ func (m Model) cycleKindFilter() (tea.Model, tea.Cmd) {
 	case "":
 		m.kindFilter = domain.KindTask
 	case domain.KindTask:
+		m.kindFilter = domain.KindIdea
+	case domain.KindIdea:
 		m.kindFilter = domain.KindNote
 	default:
 		m.kindFilter = ""
@@ -408,7 +412,7 @@ func (m *Model) startCapture(kind domain.Kind) {
 func (m *Model) startEdit(field inputMode) {
 	entity := m.currentEntity()
 	if entity == nil {
-		m.setStatus("Select a note or task to edit.")
+		m.setStatus("Select a Rune to edit.")
 		return
 	}
 	if entity.DeletedAt != nil {
@@ -433,7 +437,7 @@ func (m *Model) startEdit(field inputMode) {
 func (m *Model) startDelete() {
 	entity := m.currentEntity()
 	if entity == nil {
-		m.setStatus("Select a note or task to delete.")
+		m.setStatus("Select a Rune to delete.")
 		return
 	}
 	if entity.DeletedAt != nil {
@@ -449,7 +453,7 @@ func (m *Model) startDelete() {
 func (m Model) advanceSelectedState() (tea.Model, tea.Cmd) {
 	entity := m.currentEntity()
 	if entity == nil {
-		return m.setStatus("Select a note or task to change state.")
+		return m.setStatus("Select a Rune to change state.")
 	}
 	if entity.DeletedAt != nil {
 		return m.setStatus("Restore the tombstone before changing state.")
@@ -472,7 +476,7 @@ func (m Model) advanceSelectedState() (tea.Model, tea.Cmd) {
 func (m Model) confirmDelete() (tea.Model, tea.Cmd) {
 	entity := m.currentEntity()
 	if entity == nil {
-		return m.setStatus("Select a note or task to delete.")
+		return m.setStatus("Select a Rune to delete.")
 	}
 	deleted, err := m.service.Delete(context.Background(), entity.ID, m.editRevision)
 	if err != nil {
@@ -777,9 +781,8 @@ func (m Model) renderBody(width, height int) string {
 			theme.TopLabelStyle.Render("j/k or arrows") + "  move selection",
 			theme.TopLabelStyle.Render("1-4") + "           switch inbox, runs, artifacts, sync",
 			theme.TopLabelStyle.Render("y") + "             sync now (when a remote is configured)",
-			theme.TopLabelStyle.Render("f") + "             cycle all, task, and note filters",
-			theme.TopLabelStyle.Render("a") + "             capture a task",
-			theme.TopLabelStyle.Render("n") + "             capture a note",
+			theme.TopLabelStyle.Render("f") + "             cycle all, task, idea, and note filters",
+			theme.TopLabelStyle.Render("a/i/n") + "          capture task / idea / note",
 			theme.TopLabelStyle.Render("e/E") + "           edit title/body",
 			theme.TopLabelStyle.Render("s") + "             advance selected Rune state",
 			theme.TopLabelStyle.Render("d/u") + "           tombstone/restore",
@@ -983,7 +986,7 @@ func (m Model) renderStyledEntityList(width int, compact bool) []string {
 	}
 	lines := []string{
 		theme.HeadingStyle.Render("WHAT SHOULD RUNE REMEMBER?"),
-		theme.TopMetaStyle.Render("a task · n note · / search"),
+		theme.TopMetaStyle.Render("a task · i idea · n note · / search"),
 		renderDashedRule(width),
 		renderTwoColumnLine(width, theme.HeadingStyle.Render("YOUR RUNES"), theme.TopMetaStyle.Render(fmt.Sprintf("%d Runes", len(m.entities)))),
 		theme.TopMetaStyle.Render("filter: " + kindFilterLabel(m.kindFilter)),
@@ -999,7 +1002,7 @@ func (m Model) renderStyledEntityList(width int, compact bool) []string {
 		}
 	}
 	if len(m.entities) == 0 {
-		lines = append(lines, "", theme.HeadingStyle.Render("Nothing here yet."), theme.TopMetaStyle.Render("Capture a note or task to give it shape."))
+		lines = append(lines, "", theme.HeadingStyle.Render("Nothing here yet."), theme.TopMetaStyle.Render("Capture a note, idea, or task to give it shape."))
 	}
 	return lines
 }
@@ -1420,6 +1423,9 @@ func captureStatus(kind domain.Kind) domain.Status {
 }
 
 func capturePlaceholder(kind domain.Kind) string {
+	if kind == domain.KindIdea {
+		return "capture an idea..."
+	}
 	if kind == domain.KindNote {
 		return "capture a note..."
 	}
@@ -1439,6 +1445,8 @@ func kindFilterLabel(kind domain.Kind) string {
 		return "tasks"
 	case domain.KindNote:
 		return "notes"
+	case domain.KindIdea:
+		return "ideas"
 	default:
 		return "all"
 	}

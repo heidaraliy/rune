@@ -469,7 +469,8 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 	fs.Var(&facetProperties, "facet-property", "facet-scoped property facet.key=value; repeatable")
 	fromStdin := fs.Bool("stdin", false, "read body from stdin")
 	asNote := fs.Bool("note", false, "capture a note instead of a task")
-	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true})
+	kindFlag := fs.String("kind", "", "Rune kind: task, idea, or note")
+	pos, err := parseFlags(fs, args, map[string]bool{"project": true, "db": true, "workspace": true, "body": true, "parent": true, "order": true, "state": true, "facets": true, "property": true, "facet-property": true, "kind": true})
 	if err != nil {
 		return err
 	}
@@ -497,9 +498,20 @@ func runV2Capture(args []string, stdout io.Writer, stdin io.Reader, cwd string) 
 		parentID = parentRune.ID
 	}
 	kind := domain.KindTask
-	status := domain.StatusDraft
+	if strings.TrimSpace(*kindFlag) != "" {
+		kind = domain.Kind(strings.ToLower(strings.TrimSpace(*kindFlag)))
+		if kind != domain.KindTask && kind != domain.KindIdea && kind != domain.KindNote {
+			return fmt.Errorf("unknown v2 kind %q; use task, idea, or note", *kindFlag)
+		}
+	}
 	if *asNote {
+		if *kindFlag != "" && kind != domain.KindNote {
+			return errors.New("--note cannot be combined with a non-note --kind")
+		}
 		kind = domain.KindNote
+	}
+	status := domain.StatusDraft
+	if kind != domain.KindTask {
 		status = ""
 	}
 	parsedState, err := domain.NormalizeRuneState(*state)
@@ -575,7 +587,7 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	project := fs.String("project", "", "project")
 	dbPath := fs.String("db", "", "v2 database path")
 	workspace := fs.String("workspace", "local", "workspace id")
-	kind := fs.String("kind", "", "note or task")
+	kind := fs.String("kind", "", "note, task, or idea")
 	status := fs.String("status", "", "task status")
 	state := fs.String("state", "", "Rune lifecycle state")
 	query := fs.String("query", "", "search title and body")
@@ -605,8 +617,8 @@ func runV2List(args []string, stdout io.Writer, cwd string) error {
 	options := domain.ListOptions{Project: projectName, Query: *query, IncludeDeleted: *deleted}
 	if *kind != "" {
 		options.Kind = domain.Kind(*kind)
-		if options.Kind != domain.KindNote && options.Kind != domain.KindTask {
-			return fmt.Errorf("unknown v2 kind %q; use note or task", *kind)
+		if options.Kind != domain.KindNote && options.Kind != domain.KindTask && options.Kind != domain.KindIdea {
+			return fmt.Errorf("unknown v2 kind %q; use note, task, or idea", *kind)
 		}
 	}
 	if *status != "" {

@@ -19,6 +19,7 @@ type RuneKind = Kind
 const (
 	KindNote Kind = "note"
 	KindTask Kind = "task"
+	KindIdea Kind = "idea"
 )
 
 type Status string
@@ -97,6 +98,7 @@ type RuneFacet string
 const (
 	FacetDocument RuneFacet = "document"
 	FacetTask     RuneFacet = "task"
+	FacetIdea     RuneFacet = "idea"
 )
 
 func NormalizeRuneFacet(value string) (RuneFacet, error) {
@@ -128,8 +130,11 @@ func (e Entity) Facets() []RuneFacet {
 }
 
 func DefaultRuneFacets(kind Kind) []RuneFacet {
-	if kind == KindTask {
+	switch kind {
+	case KindTask:
 		return []RuneFacet{FacetDocument, FacetTask}
+	case KindIdea:
+		return []RuneFacet{FacetDocument, FacetIdea}
 	}
 	return []RuneFacet{FacetDocument}
 }
@@ -163,13 +168,21 @@ func NormalizeRuneFacets(facets []RuneFacet, kind Kind) ([]RuneFacet, error) {
 	}
 	ordered := make([]RuneFacet, 0, len(normalized)+1)
 	ordered = append(ordered, FacetDocument)
-	if kind == KindTask {
+	switch kind {
+	case KindTask:
 		ordered = append(ordered, FacetTask)
-	} else if _, ok := seen[FacetTask]; ok {
-		ordered = append(ordered, FacetTask)
+	case KindIdea:
+		ordered = append(ordered, FacetIdea)
+	default:
+		if _, ok := seen[FacetTask]; ok {
+			ordered = append(ordered, FacetTask)
+		}
+		if _, ok := seen[FacetIdea]; ok {
+			ordered = append(ordered, FacetIdea)
+		}
 	}
 	for _, facet := range normalized {
-		if facet == FacetDocument || facet == FacetTask {
+		if facet == FacetDocument || facet == FacetTask || facet == FacetIdea {
 			continue
 		}
 		ordered = append(ordered, facet)
@@ -725,6 +738,10 @@ func (e Entity) IsTask() bool {
 	return e.HasFacet(FacetTask)
 }
 
+func (e Entity) IsIdea() bool {
+	return e.Kind == KindIdea
+}
+
 func (e *Entity) ApplyPropertyChanges(changes []RunePropertyChange) error {
 	if changes == nil {
 		return nil
@@ -814,7 +831,7 @@ func (e Entity) Validate() error {
 	if strings.TrimSpace(e.ID) == "" {
 		return errors.New("entity id is required")
 	}
-	if e.Kind != KindNote && e.Kind != KindTask {
+	if e.Kind != KindNote && e.Kind != KindTask && e.Kind != KindIdea {
 		return fmt.Errorf("unsupported entity kind %q", e.Kind)
 	}
 	if strings.TrimSpace(e.WorkspaceID) == "" {
@@ -856,7 +873,7 @@ func (e Entity) Validate() error {
 			return fmt.Errorf("unsupported task status %q", e.Status)
 		}
 	} else if e.Status != "" {
-		return errors.New("notes cannot have task status")
+		return errors.New("non-task Runes cannot have task status")
 	}
 	return nil
 }

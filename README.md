@@ -75,7 +75,9 @@ single-workspace sync server for device dogfooding:
 ```sh
 rune v2 capture "design sync" --project rune
 rune v2 capture "sync proposal" --note --facets proposal,research --property audience=team --facet-property proposal.decision=pending
+rune v2 capture "a direction worth keeping" --kind idea --body "develop this into a living Rune"
 rune v2 capture "ready for review" --state ready
+rune v2 list --kind idea --project rune
 rune v2 list --project rune
 rune v2 list --state in_progress
 rune v2 capture "break proposal into a task" --parent rune://<parent-id>
@@ -106,8 +108,8 @@ rune v2 web --listen 0.0.0.0:8788 --token "$RUNE_WEB_TOKEN" --remote https://syn
 
 The structured Rune TUI is a client over the shared application contract and
 structured store. Use `1`-`4` to switch workspace, runs, artifacts, and local
-sync status; `a`/`n` capture; `q` queues a task; `x` executes a run; `c`
-cancels it; `/` searches; `f` cycles all/task/note workspace filters; `y`
+sync status; `a`/`i`/`n` capture a task, idea, or note; `q` queues a task; `x` executes a run; `c`
+cancels it; `/` searches; `f` cycles all/task/idea/note workspace filters; `y`
 starts a background sync when a remote is configured; and `Q` quits. Pass
 `--remote <directory|http(s) URL>` and, for HTTP, `--token` to configure the
 target. `--auto-sync` runs one sync at startup; later syncs are explicit so

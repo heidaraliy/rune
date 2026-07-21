@@ -401,6 +401,9 @@ func TestModelAutoSyncRunsOnceAtStartupAndKindFilterCycles(t *testing.T) {
 	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindNote, Project: "rune", Title: "note"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.Create(context.Background(), domain.Entity{Kind: domain.KindIdea, Project: "rune", Title: "idea"}); err != nil {
+		t.Fatal(err)
+	}
 	peer, err := runesync.OpenFilePeer(filepath.Join(t.TempDir(), "remote"))
 	if err != nil {
 		t.Fatal(err)
@@ -424,11 +427,15 @@ func TestModelAutoSyncRunsOnceAtStartupAndKindFilterCycles(t *testing.T) {
 		t.Fatalf("task filter entities=%#v view=\n%s", model.entities, model.View())
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if len(model.entities) != 1 || model.entities[0].Kind != domain.KindIdea || !strings.Contains(model.View(), "filter: ideas") {
+		t.Fatalf("note filter entities=%#v view=\n%s", model.entities, model.View())
+	}
+	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
 	if len(model.entities) != 1 || model.entities[0].Kind != domain.KindNote || !strings.Contains(model.View(), "filter: notes") {
 		t.Fatalf("note filter entities=%#v view=\n%s", model.entities, model.View())
 	}
 	model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
-	if len(model.entities) != 2 || !strings.Contains(model.View(), "filter: all") {
+	if len(model.entities) != 3 || !strings.Contains(model.View(), "filter: all") {
 		t.Fatalf("all filter entities=%#v view=\n%s", model.entities, model.View())
 	}
 }
