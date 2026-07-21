@@ -70,7 +70,6 @@
                 <form id="capture-form" class="record-card">
                   <div class="record-heading">
                     <div>
-                      <div class="eyebrow">Capture</div>
                       <h1>What should Rune record?</h1>
                     </div>
                   </div>
@@ -147,16 +146,20 @@
                 <form id="detail-form" class="detail-card hidden">
                   <div class="detail-heading">
                     <div>
-                      <div id="detail-kind" class="eyebrow">TASK · RUNE</div>
+                      <div id="detail-kind" class="detail-kind">
+                        <span class="kind-label">Task</span>
+                        <span class="meta-separator">·</span>
+                        <code class="rune-id-inline">79fcf99d</code>
+                      </div>
                       <input id="detail-title" class="detail-title" maxlength="240" />
                     </div>
                     <div class="detail-heading-actions">
-                      <span id="detail-revision" class="revision-badge">rev 1</span>
+                      <span id="detail-revision" class="revision-badge">Revision 1</span>
                       <button class="detail-more" type="button" aria-label="Rune options">⋮</button>
                     </div>
                   </div>
                   <div class="detail-meta">
-                    <span id="detail-id"></span>
+                    <code id="detail-id"></code>
                     <span id="detail-project"></span>
                     <span id="detail-updated"></span>
                   </div>
@@ -178,7 +181,6 @@
                   <section class="children-section" aria-label="Child Runes">
                     <div class="children-heading">
                       <div>
-                        <div class="eyebrow">Hierarchy</div>
                         <h3>Child Runes <span id="child-count" class="count-badge">0</span></h3>
                       </div>
                       <button id="new-child" class="button button-small" type="button">＋ Child Rune</button>
@@ -188,8 +190,8 @@
 
                   <div id="detail-links" class="detail-links"></div>
                   <div class="detail-actions">
-                    <button id="save-detail" class="button button-primary" type="submit">Save changes <span>⌘S</span></button>
-                    <button id="queue-run" class="button button-quiet" type="button">Queue agent run</button>
+                    <button id="save-detail" class="button button-primary" type="submit">Save <span>⌘S</span></button>
+                    <button id="queue-run" class="button button-quiet" type="button">Queue Agent</button>
                     <button id="delete-detail" class="button button-danger" type="button">Tombstone</button>
                   </div>
                 </form>
@@ -197,8 +199,7 @@
                 <section class="activity-card">
                   <div class="card-heading">
                     <div>
-                      <div class="eyebrow">Execution</div>
-                      <h2>Recent activity</h2>
+                      <h2>Recent Activity</h2>
                     </div>
                     <button class="view-link" data-view="activity" type="button">View all <span>→</span></button>
                   </div>

@@ -56,11 +56,16 @@
   }
 
   function displayID(id) { return id && id.length > 8 ? id.slice(0, 8) : id; }
-  function stateLabel(value) { return (value || "draft").replaceAll("_", " "); }
+  function sentenceLabel(value) {
+    const normalized = String(value || "").replaceAll("_", " ").trim();
+    return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "";
+  }
+  function kindLabel(value) { return sentenceLabel(value); }
+  function stateLabel(value) { return sentenceLabel(value || "draft"); }
   function dateLabel(value) {
     if (!value) return "";
     const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? "" : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return Number.isNaN(date.valueOf()) ? "" : date.toLocaleDateString(undefined, { month: "long", day: "numeric" });
   }
 
   function make(tag, className, text) {
@@ -111,8 +116,8 @@
 
       const snippet = make("div", "rune-item-snippet", rune.body || "No information yet — open this Rune to add the useful version.");
       const bottom = make("div", "rune-item-bottom");
-      const lifecycle = rune.deleted_at ? "tombstoned" : stateLabel(rune.state || rune.status);
-      bottom.append(make("span", "kind-mark", rune.kind), make("span", "state-mark", lifecycle));
+      const lifecycle = stateLabel(rune.deleted_at ? "tombstoned" : (rune.state || rune.status));
+      bottom.append(make("span", "kind-mark", kindLabel(rune.kind)), make("span", "state-mark", lifecycle));
       if (rune.parent_id) bottom.append(make("span", "parent-mark", `child of ${displayID(rune.parent_id)}`));
       bottom.append(make("span", "rune-date", dateLabel(rune.updated_at)));
       item.append(top, snippet, bottom);
@@ -163,7 +168,7 @@
       const copy = make("span", "child-copy");
       copy.append(make("strong", "", child.title));
       copy.append(make("small", "", child.body || "No information yet."));
-      row.append(copy, make("span", "child-state", child.deleted_at ? "tombstoned" : stateLabel(child.state || child.status)));
+      row.append(copy, make("span", "child-state", stateLabel(child.deleted_at ? "tombstoned" : (child.state || child.status))));
       list.append(row);
     }
   }
@@ -181,11 +186,16 @@
     empty.classList.add("hidden");
     const rune = state.detail.rune;
     const deleted = Boolean(rune.deleted_at);
-    $("detail-kind").textContent = `${rune.kind.toUpperCase()} · ${displayID(rune.id)}`;
+    const detailKind = $("detail-kind");
+    detailKind.replaceChildren(
+      make("span", "kind-label", kindLabel(rune.kind)),
+      make("span", "meta-separator", "·"),
+      make("code", "rune-id-inline", displayID(rune.id)),
+    );
     $("detail-title").value = rune.title || "";
     $("detail-body").value = rune.body || "";
     $("detail-state").value = rune.state || "draft";
-    $("detail-revision").textContent = `rev ${rune.revision}`;
+    $("detail-revision").textContent = `Revision ${rune.revision}`;
     $("detail-id").textContent = displayID(rune.id);
     $("detail-project").textContent = rune.project ? `project:${rune.project}` : "workspace";
     $("detail-updated").textContent = dateLabel(rune.updated_at);
@@ -229,7 +239,7 @@
       const row = make("div", "run-row");
       row.append(make("span", "run-id", displayID(run.id)));
       row.append(make("span", "run-title", run.summary || `Task ${displayID(run.task_id)}`));
-      row.append(make("span", "run-status", run.status));
+      row.append(make("span", "run-status", stateLabel(run.status)));
       list.append(row);
     }
   }
