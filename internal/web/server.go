@@ -252,6 +252,11 @@ func (s *Server) handleRuneResource(w http.ResponseWriter, r *http.Request, id s
 		if links == nil {
 			links = []domain.Link{}
 		}
+		parents, err := s.parentRunes(r.Context(), entity)
+		if err != nil {
+			writeError(w, statusForError(err), err.Error())
+			return
+		}
 		children, err := s.Client.List(r.Context(), domain.ListOptions{
 			ParentID: entity.ID,
 			SortBy:   domain.RuneSortOrder,
@@ -263,7 +268,7 @@ func (s *Server) handleRuneResource(w http.ResponseWriter, r *http.Request, id s
 		if children == nil {
 			children = []domain.Rune{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"protocol": protocol, "rune": entity, "links": links, "children": children})
+		writeJSON(w, http.StatusOK, map[string]any{"protocol": protocol, "rune": entity, "parents": parents, "links": links, "children": children})
 	case http.MethodPatch:
 		var request updateRuneRequest
 		if err := decodeJSON(w, r, &request); err != nil {
@@ -300,6 +305,33 @@ func (s *Server) handleRuneResource(w http.ResponseWriter, r *http.Request, id s
 		w.Header().Set("Allow", "GET, PATCH, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "Rune endpoint only accepts GET, PATCH, and DELETE")
 	}
+}
+
+func (s *Server) parentRunes(ctx context.Context, entity domain.Rune) ([]domain.Rune, error) {
+	parentID := strings.TrimSpace(entity.ParentID)
+	if parentID == "" {
+		return []domain.Rune{}, nil
+	}
+
+	seen := map[string]struct{}{entity.ID: {}}
+	parents := make([]domain.Rune, 0, 2)
+	for parentID != "" {
+		if _, ok := seen[parentID]; ok {
+			return nil, fmt.Errorf("Rune parent cycle detected at %s", domain.DisplayID(parentID))
+		}
+		seen[parentID] = struct{}{}
+		parent, err := s.Client.GetIncludingDeleted(ctx, parentID)
+		if err != nil {
+			return nil, fmt.Errorf("load parent Rune %s: %w", domain.DisplayID(parentID), err)
+		}
+		parents = append(parents, parent)
+		parentID = strings.TrimSpace(parent.ParentID)
+	}
+
+	for left, right := 0, len(parents)-1; left < right; left, right = left+1, right-1 {
+		parents[left], parents[right] = parents[right], parents[left]
+	}
+	return parents, nil
 }
 
 func (s *Server) handleRuneRestore(w http.ResponseWriter, r *http.Request, id string) {

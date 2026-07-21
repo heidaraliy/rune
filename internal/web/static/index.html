@@ -112,7 +112,7 @@
                         <option value="updated_at">Recently updated</option>
                         <option value="created_at">Recently created</option>
                         <option value="title">Title</option>
-                        <option value="status">Lifecycle</option>
+                        <option value="status">Status</option>
                         <option value="sibling_order">Hierarchy order</option>
                       </select>
                     </label>
@@ -145,38 +145,41 @@
 
                 <form id="detail-form" class="detail-card hidden">
                   <div class="detail-heading">
-                    <div>
-                      <div id="detail-kind" class="detail-kind">
-                        <span class="kind-label">Task</span>
-                        <span class="meta-separator">·</span>
-                        <code class="rune-id-inline">79fcf99d</code>
+                    <div class="detail-heading-main">
+                      <div class="detail-meta-line">
+                        <span id="detail-kind" class="kind-label">Task</span>
+                        <code id="detail-id" class="rune-id-inline">79fcf99d</code>
+                        <span id="detail-revision" class="revision-badge">Revision 1</span>
+                        <span id="detail-project">project:rune</span>
+                        <span id="detail-updated">July 21</span>
                       </div>
-                      <input id="detail-title" class="detail-title" maxlength="240" />
+                      <textarea id="detail-title" class="detail-title" rows="2" maxlength="240"></textarea>
                     </div>
                     <div class="detail-heading-actions">
-                      <span id="detail-revision" class="revision-badge">Revision 1</span>
                       <button class="detail-more" type="button" aria-label="Rune options">⋮</button>
                     </div>
                   </div>
-                  <div class="detail-meta">
-                    <code id="detail-id"></code>
-                    <span id="detail-project"></span>
-                    <span id="detail-updated"></span>
-                  </div>
-                  <div class="state-row">
-                    <label for="detail-state">Lifecycle</label>
-                    <select id="detail-state">
-                      <option value="draft">Draft</option>
-                      <option value="ready">Ready</option>
-                      <option value="in_progress">In progress</option>
-                      <option value="complete">Complete</option>
-                      <option value="blocked">Blocked</option>
-                      <option value="review">Review</option>
-                      <option value="failed">Failed</option>
-                    </select>
+                  <div class="status-row" role="group" aria-label="Rune status">
+                    <span class="status-label">Status:</span>
+                    <div id="detail-status-picker" class="status-picker">
+                      <button class="status-choice" data-detail-state="draft" type="button">Draft</button>
+                      <button class="status-choice" data-detail-state="ready" type="button">Ready</button>
+                      <button class="status-choice" data-detail-state="in_progress" type="button">In Progress</button>
+                      <button class="status-choice" data-detail-state="complete" type="button">Complete</button>
+                      <button class="status-choice" data-detail-state="blocked" type="button">Blocked</button>
+                      <button class="status-choice" data-detail-state="review" type="button">Review</button>
+                      <button class="status-choice" data-detail-state="failed" type="button">Failed</button>
+                    </div>
                     <span id="detail-deleted" class="deleted-label hidden">reversible tombstone</span>
                   </div>
                   <textarea id="detail-body" class="detail-body" placeholder="Write the useful version here..."></textarea>
+
+                  <section id="parents-section" class="parents-section hidden" aria-label="Parent Runes">
+                    <div class="parents-heading">
+                      <h3>Parent Runes <span id="parent-count" class="count-badge">0</span></h3>
+                    </div>
+                    <div id="parent-list" class="parent-list"></div>
+                  </section>
 
                   <section class="children-section" aria-label="Child Runes">
                     <div class="children-heading">
@@ -228,7 +231,7 @@
                     <option value="updated_at">Recently updated</option>
                     <option value="created_at">Recently created</option>
                     <option value="title">Title</option>
-                    <option value="status">Lifecycle</option>
+                    <option value="status">Status</option>
                     <option value="sibling_order">Hierarchy order</option>
                   </select>
                 </label>

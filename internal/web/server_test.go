@@ -70,14 +70,14 @@ func responseJSON(t *testing.T, recorder *httptest.ResponseRecorder, target any)
 func TestServerServesUIHealthAndProtectsAPI(t *testing.T) {
 	server, _ := testServer(t, nil)
 	ui := doRequest(t, server, http.MethodGet, "/", nil, false)
-	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune record?") || !strings.Contains(ui.Body.String(), "My Runes") || !strings.Contains(ui.Body.String(), "Tombstoned") || !strings.Contains(ui.Body.String(), "Child Runes") || !strings.Contains(ui.Body.String(), "Recent Activity") || !strings.Contains(ui.Body.String(), "Revision 1") || !strings.Contains(ui.Body.String(), "detail-kind") || !strings.Contains(ui.Body.String(), "rune-id-inline") || !strings.Contains(ui.Body.String(), "Save <span>⌘S</span>") || !strings.Contains(ui.Body.String(), "Queue Agent") || !strings.Contains(ui.Body.String(), "data-view=\"runes\"") || !strings.Contains(ui.Body.String(), "data-record-parent") || !strings.Contains(ui.Body.String(), "data-record-kind=\"idea\"") || !strings.Contains(ui.Body.String(), "brand-ascii") || !strings.Contains(ui.Body.String(), "fonts.googleapis.com") || strings.Contains(ui.Body.String(), "Shared state") || strings.Contains(ui.Body.String(), "All, including tombstones") || strings.Contains(ui.Body.String(), "CAPTURE") || strings.Contains(ui.Body.String(), "EXECUTION") || strings.Contains(ui.Body.String(), "HIERARCHY") || strings.Contains(ui.Body.String(), "Save changes") || strings.Contains(ui.Body.String(), "Queue agent run") || strings.Contains(ui.Body.String(), "Recent activity") {
+	if ui.Code != http.StatusOK || !strings.Contains(ui.Body.String(), "What should Rune record?") || !strings.Contains(ui.Body.String(), "My Runes") || !strings.Contains(ui.Body.String(), "Tombstoned") || !strings.Contains(ui.Body.String(), "Parent Runes") || !strings.Contains(ui.Body.String(), "Child Runes") || !strings.Contains(ui.Body.String(), "Recent Activity") || !strings.Contains(ui.Body.String(), "Revision 1") || !strings.Contains(ui.Body.String(), "detail-meta-line") || !strings.Contains(ui.Body.String(), "rune-id-inline") || !strings.Contains(ui.Body.String(), "Status:") || !strings.Contains(ui.Body.String(), "data-detail-state=\"in_progress\"") || !strings.Contains(ui.Body.String(), "<textarea id=\"detail-title\"") || !strings.Contains(ui.Body.String(), "Save <span>⌘S</span>") || !strings.Contains(ui.Body.String(), "Queue Agent") || !strings.Contains(ui.Body.String(), "data-view=\"runes\"") || !strings.Contains(ui.Body.String(), "data-record-parent") || !strings.Contains(ui.Body.String(), "data-record-kind=\"idea\"") || !strings.Contains(ui.Body.String(), "brand-ascii") || !strings.Contains(ui.Body.String(), "fonts.googleapis.com") || strings.Contains(ui.Body.String(), "Shared state") || strings.Contains(ui.Body.String(), "All, including tombstones") || strings.Contains(ui.Body.String(), "CAPTURE") || strings.Contains(ui.Body.String(), "EXECUTION") || strings.Contains(ui.Body.String(), "HIERARCHY") || strings.Contains(ui.Body.String(), "Lifecycle") || strings.Contains(ui.Body.String(), "Save changes") || strings.Contains(ui.Body.String(), "Queue agent run") || strings.Contains(ui.Body.String(), "Recent activity") {
 		t.Fatalf("UI response code=%d body=%q", ui.Code, ui.Body.String())
 	}
 	if ui.Header().Get("X-Content-Type-Options") != "nosniff" || ui.Header().Get("X-Frame-Options") != "DENY" || ui.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("UI security headers=%v", ui.Header())
 	}
 	styles := doRequest(t, server, http.MethodGet, "/static/styles.css", nil, false)
-	if styles.Code != http.StatusOK || !strings.Contains(styles.Body.String(), "--canvas:") || !strings.Contains(styles.Body.String(), "--indigo:") || !strings.Contains(styles.Body.String(), "--type-heading:") || !strings.Contains(styles.Body.String(), "--font-mono:") || !strings.Contains(styles.Body.String(), "Philosopher") || !strings.Contains(styles.Body.String(), ".collection-card") || strings.Contains(styles.Body.String(), "dashed") || strings.Contains(styles.Body.String(), "text-transform: uppercase") {
+	if styles.Code != http.StatusOK || !strings.Contains(styles.Body.String(), "--canvas:") || !strings.Contains(styles.Body.String(), "--indigo:") || !strings.Contains(styles.Body.String(), "--type-heading: 26px") || !strings.Contains(styles.Body.String(), "--type-subheading: 18px") || !strings.Contains(styles.Body.String(), "--font-mono:") || !strings.Contains(styles.Body.String(), "Philosopher") || !strings.Contains(styles.Body.String(), ".collection-card") || strings.Contains(styles.Body.String(), "dashed") || strings.Contains(styles.Body.String(), "text-transform: uppercase") {
 		t.Fatalf("visual stylesheet code=%d body=%q", styles.Code, styles.Body.String())
 	}
 	if csp := ui.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "fonts.googleapis.com") || !strings.Contains(csp, "fonts.gstatic.com") {
@@ -215,6 +215,40 @@ func TestServerCreatesIdeasAndReturnsChildren(t *testing.T) {
 	ideaList := doRequest(t, server, http.MethodGet, "/v1/runes?kind=idea", nil, true)
 	if ideaList.Code != http.StatusOK || !strings.Contains(ideaList.Body.String(), "child direction") {
 		t.Fatalf("idea list status=%d body=%s", ideaList.Code, ideaList.Body.String())
+	}
+}
+
+func TestServerReturnsParentChainForNestedRunes(t *testing.T) {
+	server, _ := testServer(t, nil)
+	create := func(title string, parentID string) domain.Rune {
+		request := map[string]any{"kind": "note", "title": title}
+		if parentID != "" {
+			request["parent_id"] = parentID
+		}
+		response := doRequest(t, server, http.MethodPost, "/v1/runes", request, true)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		var payload struct {
+			Rune domain.Rune `json:"rune"`
+		}
+		responseJSON(t, response, &payload)
+		return payload.Rune
+	}
+
+	root := create("root Rune", "")
+	parent := create("middle Rune", root.ID)
+	leaf := create("leaf Rune", parent.ID)
+	detailResponse := doRequest(t, server, http.MethodGet, "/v1/runes/"+leaf.ID, nil, true)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("leaf detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail struct {
+		Parents []domain.Rune `json:"parents"`
+	}
+	responseJSON(t, detailResponse, &detail)
+	if len(detail.Parents) != 2 || detail.Parents[0].ID != root.ID || detail.Parents[1].ID != parent.ID {
+		t.Fatalf("parent chain=%#v", detail.Parents)
 	}
 }
 

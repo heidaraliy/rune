@@ -10,6 +10,7 @@
     runes: [],
     selectedId: "",
     detail: null,
+    detailState: "draft",
     runs: [],
     loading: false,
   };
@@ -151,6 +152,34 @@
     });
   }
 
+  function renderStatusChoices() {
+    const deleted = !state.detail || Boolean(state.detail.rune.deleted_at);
+    document.querySelectorAll("[data-detail-state]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.detailState === state.detailState);
+      button.disabled = deleted;
+    });
+  }
+
+  function renderParents(parents) {
+    const section = $("parents-section");
+    const list = $("parent-list");
+    const values = parents || [];
+    $("parent-count").textContent = String(values.length);
+    section.classList.toggle("hidden", values.length === 0);
+    list.replaceChildren();
+    for (const parent of values) {
+      const row = make("button", "parent-row");
+      row.type = "button";
+      row.addEventListener("click", () => selectRune(parent.id));
+      row.append(make("span", `parent-icon kind-${parent.kind}`, runeIcon(parent)));
+      const copy = make("span", "parent-copy");
+      copy.append(make("strong", "", parent.title));
+      copy.append(make("small", "", `${kindLabel(parent.kind)} · ${displayID(parent.id)}`));
+      row.append(copy, make("span", "parent-state", stateLabel(parent.deleted_at ? "tombstoned" : (parent.state || parent.status))));
+      list.append(row);
+    }
+  }
+
   function renderChildren(children) {
     const list = $("child-list");
     const values = children || [];
@@ -179,6 +208,9 @@
     if (!state.detail) {
       form.classList.add("hidden");
       empty.classList.remove("hidden");
+      state.detailState = "draft";
+      renderStatusChoices();
+      renderParents([]);
       $("child-list").replaceChildren();
       return;
     }
@@ -186,21 +218,15 @@
     empty.classList.add("hidden");
     const rune = state.detail.rune;
     const deleted = Boolean(rune.deleted_at);
-    const detailKind = $("detail-kind");
-    detailKind.replaceChildren(
-      make("span", "kind-label", kindLabel(rune.kind)),
-      make("span", "meta-separator", "·"),
-      make("code", "rune-id-inline", displayID(rune.id)),
-    );
+    state.detailState = rune.state || rune.status || "draft";
+    $("detail-kind").textContent = kindLabel(rune.kind);
+    $("detail-id").textContent = displayID(rune.id);
     $("detail-title").value = rune.title || "";
     $("detail-body").value = rune.body || "";
-    $("detail-state").value = rune.state || "draft";
     $("detail-revision").textContent = `Revision ${rune.revision}`;
-    $("detail-id").textContent = displayID(rune.id);
     $("detail-project").textContent = rune.project ? `project:${rune.project}` : "workspace";
     $("detail-updated").textContent = dateLabel(rune.updated_at);
     $("detail-deleted").classList.toggle("hidden", !deleted);
-    $("detail-state").disabled = deleted;
     $("detail-title").disabled = deleted;
     $("detail-body").disabled = deleted;
     $("save-detail").disabled = deleted;
@@ -211,6 +237,8 @@
     deleteButton.classList.toggle("button-danger", !deleted);
     deleteButton.classList.toggle("button-quiet", deleted);
     $("queue-run").classList.toggle("hidden", rune.kind !== "task" || deleted);
+    renderStatusChoices();
+    renderParents(state.detail.parents);
     renderChildren(state.detail.children);
 
     const links = $("detail-links");
@@ -394,6 +422,11 @@
   $("runes-sort-filter").addEventListener("change", (event) => setSort(event.target.value));
   $("filter-by").addEventListener("change", (event) => setFilter(event.target.value));
   $("runes-filter-by").addEventListener("change", (event) => setFilter(event.target.value));
+  document.querySelectorAll("[data-detail-state]").forEach((button) => button.addEventListener("click", () => {
+    if (button.disabled) return;
+    state.detailState = button.dataset.detailState;
+    renderStatusChoices();
+  }));
 
   let searchTimer;
   function updateSearch(value) {
@@ -466,7 +499,7 @@
           expected_revision: rune.revision,
           title: $("detail-title").value,
           body: $("detail-body").value,
-          state: $("detail-state").value,
+          state: state.detailState,
         }),
       });
       state.selectedId = response.rune.id;
@@ -506,6 +539,7 @@
 
   renderRecordKind();
   renderRecordTarget();
+  renderStatusChoices();
   renderView();
   refresh();
 })();
