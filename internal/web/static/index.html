@@ -18,7 +18,6 @@
             <div class="brand-ascii" aria-label="Rune">'||''| &nbsp;'|| &nbsp; ||` &nbsp;`||''|, &nbsp; .|''|,<br />&nbsp;|| &nbsp;&nbsp;&nbsp; || &nbsp; || &nbsp;&nbsp; || &nbsp; || &nbsp; ||..||<br />.||. &nbsp;&nbsp; `|..'|. .|| &nbsp; ||. &nbsp;`|...</div>
             <div class="brand-context">
               <div class="brand">rune</div>
-              <div class="brand-subtitle">shared workspace</div>
             </div>
           </div>
 
@@ -170,9 +169,14 @@
                       <button class="status-choice" data-detail-state="review" type="button">Review</button>
                       <button class="status-choice" data-detail-state="failed" type="button">Failed</button>
                     </div>
-                    <span id="detail-deleted" class="deleted-label hidden">reversible tombstone</span>
                   </div>
-                  <textarea id="detail-body" class="detail-body" placeholder="Write the useful version here..."></textarea>
+                  <div id="detail-body-wrap" class="detail-body-wrap">
+                    <textarea id="detail-body" class="detail-body" placeholder="Write the useful version here..."></textarea>
+                    <div id="detail-deleted" class="tombstone-overlay hidden" role="status">
+                      <strong>Rune tombstoned</strong>
+                      <span>Restore this Rune to edit its content.</span>
+                    </div>
+                  </div>
 
                   <section id="parents-section" class="parents-section hidden" aria-label="Parent Runes">
                     <div class="parents-heading">

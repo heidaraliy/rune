@@ -63,6 +63,7 @@
   }
   function kindLabel(value) { return sentenceLabel(value); }
   function stateLabel(value) { return sentenceLabel(value || "draft"); }
+  function stateToken(value) { return String(value || "draft").replaceAll("_", "-").toLowerCase(); }
   function dateLabel(value) {
     if (!value) return "";
     const date = new Date(value);
@@ -117,8 +118,8 @@
 
       const snippet = make("div", "rune-item-snippet", rune.body || "No information yet — open this Rune to add the useful version.");
       const bottom = make("div", "rune-item-bottom");
-      const lifecycle = stateLabel(rune.deleted_at ? "tombstoned" : (rune.state || rune.status));
-      bottom.append(make("span", "kind-mark", kindLabel(rune.kind)), make("span", "state-mark", lifecycle));
+      const lifecycle = rune.deleted_at ? "tombstoned" : (rune.state || rune.status);
+      bottom.append(make("span", `kind-pill kind-${rune.kind}`, kindLabel(rune.kind)), make("span", `state-pill state-${stateToken(lifecycle)}`, stateLabel(lifecycle)));
       if (rune.parent_id) bottom.append(make("span", "parent-mark", `child of ${displayID(rune.parent_id)}`));
       bottom.append(make("span", "rune-date", dateLabel(rune.updated_at)));
       item.append(top, snippet, bottom);
@@ -174,8 +175,11 @@
       row.append(make("span", `parent-icon kind-${parent.kind}`, runeIcon(parent)));
       const copy = make("span", "parent-copy");
       copy.append(make("strong", "", parent.title));
-      copy.append(make("small", "", `${kindLabel(parent.kind)} · ${displayID(parent.id)}`));
-      row.append(copy, make("span", "parent-state", stateLabel(parent.deleted_at ? "tombstoned" : (parent.state || parent.status))));
+      const meta = make("span", "parent-meta");
+      meta.append(make("span", `kind-pill kind-${parent.kind}`, kindLabel(parent.kind)), make("code", "parent-id", displayID(parent.id)));
+      copy.append(meta);
+      const lifecycle = parent.deleted_at ? "tombstoned" : (parent.state || parent.status);
+      row.append(copy, make("span", `state-pill state-${stateToken(lifecycle)} parent-state`, stateLabel(lifecycle)));
       list.append(row);
     }
   }
@@ -197,7 +201,11 @@
       const copy = make("span", "child-copy");
       copy.append(make("strong", "", child.title));
       copy.append(make("small", "", child.body || "No information yet."));
-      row.append(copy, make("span", "child-state", stateLabel(child.deleted_at ? "tombstoned" : (child.state || child.status))));
+      const lifecycle = child.deleted_at ? "tombstoned" : (child.state || child.status);
+      const meta = make("span", "child-meta");
+      meta.append(make("span", `kind-pill kind-${child.kind}`, kindLabel(child.kind)), make("span", `state-pill state-${stateToken(lifecycle)}`, stateLabel(lifecycle)));
+      copy.append(meta);
+      row.append(copy);
       list.append(row);
     }
   }
@@ -226,6 +234,7 @@
     $("detail-revision").textContent = `Revision ${rune.revision}`;
     $("detail-project").textContent = rune.project ? `project:${rune.project}` : "workspace";
     $("detail-updated").textContent = dateLabel(rune.updated_at);
+    $("detail-body-wrap").classList.toggle("is-deleted", deleted);
     $("detail-deleted").classList.toggle("hidden", !deleted);
     $("detail-title").disabled = deleted;
     $("detail-body").disabled = deleted;
