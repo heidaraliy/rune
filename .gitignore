@@ -1,3 +1,5 @@
 /rune
 /dist/
 coverage.out
+# local-agent run artifacts
+.agent-runs/

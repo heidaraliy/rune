@@ -1,0 +1,42 @@
+version = 1
+
+[provider]
+kind = "codex-oss"
+oss_provider = "lmstudio"
+model = "qwen36-27b"
+context_window = 65536
+codex_command = "codex"
+extra_args = []
+
+[runtime]
+phase_timeout_seconds = 7200
+doctor_timeout_seconds = 30
+
+[safety]
+require_clean_start = true
+allow_dirty_implementation_tree = false
+allow_network = false
+auto_push = false
+auto_merge = false
+environment_allowlist = []
+
+[gates]
+require_plan_audit = true
+require_validation = true
+require_code_audit = true
+allow_waivers = true
+max_repair_rounds = 2
+
+[paths]
+runs = ".agent-runs"
+prompts = ".agent-harness/prompts"
+
+[commands]
+format_check = []
+lint = []
+typecheck = []
+build = []
+test = []
+integration = []
+replay = []
+performance = []
